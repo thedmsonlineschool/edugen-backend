@@ -54,8 +54,8 @@ async function callClaude(prompt) {
   }
 }
 
-// --- HELPER: STRICT HIERARCHY PARSER ---
-// Enforces that 10.1.1 must belong to 10.1, and 10.1.1.1 must belong to 10.1.1
+// --- HELPER: PRIORITY HIERARCHY PARSER ---
+// Checks deepest level (Outcome) first to prevent partial matches.
 function parseZambianSyllabus(text, curriculum, subject) {
   
   // 1. PRE-PROCESSING
@@ -72,62 +72,75 @@ function parseZambianSyllabus(text, curriculum, subject) {
   let currentTopic = null;
   let currentSubtopic = null;
 
-  // Regex to capture the number part and the text part
-  const numberRegex = /^\s*(\d+(?:\.\d+)+)\.?\s+(.+)/;
+  // STRICT REGEXES (Grade 10-12 or 8-9)
+  // 1. Outcome (4 segments): 10.1.1.1
+  const outcomeRegex = /^\s*((?:10|11|12|8|9)\.\d+\.\d+\.\d+)\s+(.+)/;
+  // 2. Subtopic (3 segments): 10.1.1
+  const subtopicRegex = /^\s*((?:10|11|12|8|9)\.\d+\.\d+)\s+(.+)/;
+  // 3. Topic (2 segments): 10.1
+  const topicRegex = /^\s*((?:10|11|12|8|9)\.\d+)\s+(.+)/;
 
   lines.forEach(line => {
     const str = line.trim();
     if (!str) return;
     
-    // Skip headers/footers
+    // Skip headers
     if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC') || str.includes('CONTENT')) return;
 
-    const match = str.match(numberRegex);
-    
-    if (match) {
-      const numberPart = match[1]; // e.g. "10.1"
-      const textPart = match[2].trim(); // e.g. "General Physics"
-      const segments = numberPart.split('.').length;
+    // --- CHECK 1: SPECIFIC OUTCOME (Highest Priority) ---
+    const outcomeMatch = str.match(outcomeRegex);
+    if (outcomeMatch) {
+      const number = outcomeMatch[1];
+      const text = outcomeMatch[2].trim();
+      
+      // Ensure it belongs to current subtopic
+      if (currentSubtopic && number.startsWith(currentSubtopic.number)) {
+        if (curriculum === 'obc') {
+          currentSubtopic.specificOutcomes.push(`${number} ${text}`);
+        } else {
+          currentSubtopic.competencies.push(`${number} ${text}`);
+        }
+      }
+      return; // Stop processing this line
+    }
 
-      // --- LEVEL 1: TOPIC (2 Segments: 10.1) ---
-      if (segments === 2) {
-        currentTopic = {
-          number: numberPart, // Store number for validation
-          name: `${numberPart} ${textPart}`, 
-          subtopics: []
+    // --- CHECK 2: SUBTOPIC (Medium Priority) ---
+    const subtopicMatch = str.match(subtopicRegex);
+    if (subtopicMatch) {
+      const number = subtopicMatch[1];
+      const text = subtopicMatch[2].trim();
+
+      // Ensure it belongs to current topic
+      if (currentTopic && number.startsWith(currentTopic.number)) {
+        currentSubtopic = {
+          number: number, // Store for validation
+          name: `${number} ${text}`,
+          competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
+          specificOutcomes: [], knowledge: [], skills: [], values: []
         };
-        topics.push(currentTopic);
-        currentSubtopic = null; 
+        currentTopic.subtopics.push(currentSubtopic);
       }
+      return; // Stop processing this line
+    }
 
-      // --- LEVEL 2: SUBTOPIC (3 Segments: 10.1.1) ---
-      else if (segments === 3) {
-        // STRICT VALIDATION: Must start with parent topic number
-        if (currentTopic && numberPart.startsWith(currentTopic.number)) {
-          currentSubtopic = {
-            number: numberPart, // Store number for validation
-            name: `${numberPart} ${textPart}`,
-            competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
-            specificOutcomes: [], knowledge: [], skills: [], values: []
-          };
-          currentTopic.subtopics.push(currentSubtopic);
-        }
-      }
+    // --- CHECK 3: TOPIC (Lowest Priority) ---
+    const topicMatch = str.match(topicRegex);
+    if (topicMatch) {
+      const number = topicMatch[1];
+      const text = topicMatch[2].trim();
 
-      // --- LEVEL 3: SPECIFIC OUTCOME (4 Segments: 10.1.1.1) ---
-      else if (segments === 4) {
-        // STRICT VALIDATION: Must start with parent subtopic number
-        if (currentSubtopic && numberPart.startsWith(currentSubtopic.number)) {
-          if (curriculum === 'obc') {
-            currentSubtopic.specificOutcomes.push(`${numberPart} ${textPart}`);
-          } else {
-            currentSubtopic.competencies.push(`${numberPart} ${textPart}`);
-          }
-        }
-      }
-    } 
-    // --- CONTENT HANDLING (No Number) ---
-    else if (currentSubtopic) {
+      currentTopic = {
+        number: number, // Store for validation
+        name: `${number} ${text}`,
+        subtopics: []
+      };
+      topics.push(currentTopic);
+      currentSubtopic = null; // Reset subtopic
+      return; // Stop processing this line
+    }
+
+    // --- CHECK 4: CONTENT (No Number) ---
+    if (currentSubtopic) {
        if (str.startsWith('•') || str.startsWith('-') || str.startsWith('')) {
           const content = str.replace(/^[•\-\s]+/, '').trim();
           if (content.length > 3) {
@@ -201,7 +214,7 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
        fileText = file.buffer.toString('utf-8');
     }
 
-    // STEP 1: Use the STRICT HIERARCHY PARSER
+    // STEP 1: Use the PRIORITY PARSER
     let parsedData = parseZambianSyllabus(fileText, curriculum, subject);
 
     if (!parsedData) {
