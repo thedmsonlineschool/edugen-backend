@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+// Dynamic import for node-fetch (required for v3+ in CommonJS)
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -12,7 +13,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb' })); // Increased limit for large syllabus text
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
@@ -25,7 +26,7 @@ async function callClaude(prompt) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'x-api-key': process.env.CLAUDE_API_KEY,
+        'x-api-key': process.env.CLAUDE_API_KEY, // ✅ Correct Variable Name
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
@@ -37,7 +38,10 @@ async function callClaude(prompt) {
     });
 
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error?.message || 'Claude API Error');
+    if (!response.ok) {
+      console.error("Claude API Error:", data);
+      throw new Error(data.error?.message || 'Claude API Error');
+    }
     return data.content[0].text;
   } catch (error) {
     console.error('Claude API Call Failed:', error);
@@ -46,6 +50,10 @@ async function callClaude(prompt) {
 }
 
 // --- ROUTES ---
+
+// 0. HEALTH CHECK (Required for Railway)
+app.get('/', (req, res) => res.send('EduGen AI Backend is Running 🚀'));
+app.get('/health', (req, res) => res.json({ status: 'ok', message: 'EduGen AI Backend is healthy' }));
 
 // 1. GENERATE DOCUMENT
 app.post('/api/generate-document', async (req, res) => {
@@ -145,9 +153,14 @@ app.post('/api/syllabi/parse', async (req, res) => {
 
     const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileContent}\n\nReturn ONLY the JSON object.`;
     const rawResponse = await callClaude(fullPrompt);
-    const cleanJson = rawResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const parsedData = JSON.parse(cleanJson);
 
+    // ✅ Improved JSON Extraction Regex (Finds the first { and last })
+    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON found in response");
+    
+    const parsedData = JSON.parse(jsonMatch[0]);
+
+    // Save to MongoDB
     const newSyllabus = new Syllabus(parsedData);
     await newSyllabus.save();
 
@@ -163,7 +176,8 @@ app.post('/api/syllabi/parse', async (req, res) => {
 // 3. GET ALL SYLLABI
 app.get('/api/syllabi', async (req, res) => {
   try {
-    const syllabi = await Syllabus.find().select('subject curriculumType form updatedAt');
+    // Select specific fields to keep the response light
+    const syllabi = await Syllabus.find().select('subject curriculumType form topics.length updatedAt');
     res.json(syllabi);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch syllabi' });
