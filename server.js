@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
 const pdf = require('pdf-parse');
+const mammoth = require('mammoth'); // ✅ NEW: For Word Docs
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -54,16 +55,16 @@ async function callClaude(prompt) {
 }
 
 // --- HELPER: ZAMBIAN SYLLABUS STREAM PARSER ---
-// This function fixes the "Table Flattening" issue by using the numbering system as anchors.
 function parseZambianSyllabus(text, curriculum, subject) {
   
-  // 1. PRE-PROCESSING: Fix the "One Line" issue
-  // Insert a newline before any pattern like "10.1", "10.1.1", "10.1.1.1" to separate them
+  // 1. PRE-PROCESSING
+  // Word docs might have different spacing. We normalize it.
   let cleanText = text
-    .replace(/(\d+\.\d+\s)/g, '\n$1')       // Break before Topic (10.1)
-    .replace(/(\d+\.\d+\.\d+\s)/g, '\n$1')  // Break before Subtopic (10.1.1)
-    .replace(/(\d+\.\d+\.\d+\.\d+\s)/g, '\n$1') // Break before Outcome (10.1.1.1)
-    .replace(/•/g, '\n•'); // Break before bullets
+    .replace(/\r\n/g, '\n')
+    .replace(/(\d+\.\d+\s)/g, '\n$1')       
+    .replace(/(\d+\.\d+\.\d+\s)/g, '\n$1')  
+    .replace(/(\d+\.\d+\.\d+\.\d+\s)/g, '\n$1') 
+    .replace(/•/g, '\n•'); 
 
   const lines = cleanText.split('\n');
   const topics = [];
@@ -71,10 +72,10 @@ function parseZambianSyllabus(text, curriculum, subject) {
   let currentTopic = null;
   let currentSubtopic = null;
 
-  // Regex Patterns
-  const topicRegex = /^(\d+\.\d+)\s+(.+)/;         // 10.1 GENERAL PHYSICS
-  const subtopicRegex = /^(\d+\.\d+\.\d+)\s+(.+)/; // 10.1.1 International System
-  const outcomeRegex = /^(\d+\.\d+\.\d+\.\d+)\s+(.+)/; // 10.1.1.1 Distinguish...
+  // Regex Patterns (Flexible for whitespace)
+  const topicRegex = /^\s*(\d+\.\d+)\s+(.+)/;         
+  const subtopicRegex = /^\s*(\d+\.\d+\.\d+)\s+(.+)/; 
+  const outcomeRegex = /^\s*(\d+\.\d+\.\d+\.\d+)\s+(.+)/; 
 
   lines.forEach(line => {
     const str = line.trim();
@@ -83,7 +84,7 @@ function parseZambianSyllabus(text, curriculum, subject) {
     // Skip headers/footers
     if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC SUB TOPIC')) return;
 
-    // 1. DETECT SPECIFIC OUTCOME (Deepest Level)
+    // 1. DETECT SPECIFIC OUTCOME
     const outcomeMatch = str.match(outcomeRegex);
     if (outcomeMatch) {
       if (currentSubtopic) {
@@ -94,7 +95,7 @@ function parseZambianSyllabus(text, curriculum, subject) {
           currentSubtopic.competencies.push(content);
         }
       }
-      return; // Done with this line
+      return; 
     }
 
     // 2. DETECT SUBTOPIC
@@ -103,7 +104,6 @@ function parseZambianSyllabus(text, curriculum, subject) {
       if (currentTopic) {
         currentSubtopic = {
           name: subtopicMatch[2].trim(),
-          // Initialize all arrays
           competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
           specificOutcomes: [], knowledge: [], skills: [], values: []
         };
@@ -115,24 +115,21 @@ function parseZambianSyllabus(text, curriculum, subject) {
     // 3. DETECT TOPIC
     const topicMatch = str.match(topicRegex);
     if (topicMatch) {
-      // Create new topic
       currentTopic = {
-        name: topicMatch[0].trim(), // Keep the number "10.1 GENERAL PHYSICS"
+        name: topicMatch[0].trim(), 
         subtopics: []
       };
       topics.push(currentTopic);
-      currentSubtopic = null; // Reset subtopic
+      currentSubtopic = null; 
       return;
     }
 
-    // 4. DETECT CONTENT (Knowledge/Skills/Values)
-    // In the PDF, these are often bullet points or text following an outcome
+    // 4. DETECT CONTENT
     if (currentSubtopic) {
-      if (str.startsWith('•') || str.startsWith('-') || str.startsWith('')) {
+      // Check for bullet points or lines that are clearly content
+      if (str.startsWith('•') || str.startsWith('-') || str.startsWith('') || (str.length > 10 && !str.match(/^\d/))) {
         const content = str.replace(/^[•\-\s]+/, '').trim();
         
-        // Simple heuristic to distribute content if we can't distinguish columns
-        // We default to Knowledge, but if it says "Comparing" or "Measuring", it's a Skill.
         const lower = content.toLowerCase();
         
         if (curriculum === 'obc') {
@@ -144,7 +141,6 @@ function parseZambianSyllabus(text, curriculum, subject) {
             currentSubtopic.knowledge.push(content);
           }
         } else {
-          // For CBC, map to Scope or Activities
           if (lower.startsWith('measuring') || lower.startsWith('calculating')) {
              currentSubtopic.activities.push(content);
           } else {
@@ -159,7 +155,7 @@ function parseZambianSyllabus(text, curriculum, subject) {
     return {
       subject,
       curriculumType: curriculum,
-      form: curriculum === 'cbc' ? 'Form 1' : 'Grade 10', // Default
+      form: curriculum === 'cbc' ? 'Form 1' : 'Grade 10', 
       topics
     };
   }
@@ -196,20 +192,27 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
 
     // EXTRACT TEXT
     let fileText = '';
-    if (file.mimetype === 'application/pdf') {
-      const pdfData = await pdf(file.buffer);
-      fileText = pdfData.text;
+    
+    // ✅ WORD DOCUMENT SUPPORT
+    if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+       const result = await mammoth.extractRawText({ buffer: file.buffer });
+       fileText = result.value;
+       console.log("✅ Extracted text from Word Doc");
+    } 
+    // ✅ PDF SUPPORT
+    else if (file.mimetype === 'application/pdf') {
+       const pdfData = await pdf(file.buffer);
+       fileText = pdfData.text;
+       console.log("✅ Extracted text from PDF");
     } else {
-      fileText = file.buffer.toString('utf-8');
+       fileText = file.buffer.toString('utf-8');
     }
 
-    // STEP 1: Use the new ZAMBIAN STREAM PARSER
-    // This bypasses AI for structure and uses the strict numbering system
+    // STEP 1: Use the ZAMBIAN STREAM PARSER
     let parsedData = parseZambianSyllabus(fileText, curriculum, subject);
 
     if (!parsedData) {
       console.log("⚠️ Numbering pattern not found. Falling back to AI...");
-      // Fallback to AI only if the strict numbering fails completely
       const prompt = `Extract syllabus structure for ${subject}. Return JSON. Text: ${fileText.substring(0, 50000)}`;
       const rawResponse = await callClaude(prompt);
       const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
@@ -217,7 +220,7 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     }
 
     if (!parsedData || !parsedData.topics || parsedData.topics.length === 0) {
-      return res.status(400).json({ error: 'Could not extract any topics. Ensure PDF is text-readable.' });
+      return res.status(400).json({ error: 'Could not extract any topics. Ensure file is text-readable.' });
     }
 
     // Save to MongoDB
