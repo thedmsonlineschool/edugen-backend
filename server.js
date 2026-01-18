@@ -2,8 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const multer = require('multer'); // For file uploads
-const pdf = require('pdf-parse'); // For extracting text from PDF
+const multer = require('multer');
+const pdf = require('pdf-parse');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -14,12 +14,12 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
-// Configure Multer (Memory Storage for immediate parsing)
+// Configure Multer
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 } 
 });
 
 // MongoDB Connection
@@ -53,74 +53,105 @@ async function callClaude(prompt) {
   }
 }
 
-// --- HELPER: ROBUST LOCAL PARSER (Improved for PDF Text) ---
-function parseSyllabusLocally(text, curriculum, subject) {
-  const lines = text.split('\n');
+// --- HELPER: ZAMBIAN SYLLABUS STREAM PARSER ---
+// This function fixes the "Table Flattening" issue by using the numbering system as anchors.
+function parseZambianSyllabus(text, curriculum, subject) {
+  
+  // 1. PRE-PROCESSING: Fix the "One Line" issue
+  // Insert a newline before any pattern like "10.1", "10.1.1", "10.1.1.1" to separate them
+  let cleanText = text
+    .replace(/(\d+\.\d+\s)/g, '\n$1')       // Break before Topic (10.1)
+    .replace(/(\d+\.\d+\.\d+\s)/g, '\n$1')  // Break before Subtopic (10.1.1)
+    .replace(/(\d+\.\d+\.\d+\.\d+\s)/g, '\n$1') // Break before Outcome (10.1.1.1)
+    .replace(/•/g, '\n•'); // Break before bullets
+
+  const lines = cleanText.split('\n');
   const topics = [];
+  
   let currentTopic = null;
   let currentSubtopic = null;
 
-  // Improved Regex: Allows whitespace at start (^\s*)
-  const topicRegex = /^\s*(\d+\.\d+)\s+(.+)/;       
-  const subtopicRegex = /^\s*(\d+\.\d+\.\d+)\s+(.+)/; 
-  const outcomeRegex = /^\s*(\d+\.\d+\.\d+\.\d+)\s+(.+)/; 
+  // Regex Patterns
+  const topicRegex = /^(\d+\.\d+)\s+(.+)/;         // 10.1 GENERAL PHYSICS
+  const subtopicRegex = /^(\d+\.\d+\.\d+)\s+(.+)/; // 10.1.1 International System
+  const outcomeRegex = /^(\d+\.\d+\.\d+\.\d+)\s+(.+)/; // 10.1.1.1 Distinguish...
 
   lines.forEach(line => {
-    const cleanLine = line.trim();
-    if (!cleanLine) return;
+    const str = line.trim();
+    if (!str) return;
     
-    // Ignore Page Headers/Footers common in PDFs
-    if (cleanLine.includes('Physics 5054') || cleanLine.match(/^Grade \d+-\d+/)) return;
+    // Skip headers/footers
+    if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC SUB TOPIC')) return;
 
-    // 1. Check for Specific Outcome (Deepest Level)
-    const outcomeMatch = cleanLine.match(outcomeRegex);
-    if (outcomeMatch && currentSubtopic) {
-      const outcomeText = outcomeMatch[2].trim();
-      if (curriculum === 'obc') {
-        currentSubtopic.specificOutcomes.push(outcomeText);
-      } else {
-        currentSubtopic.competencies.push(outcomeText);
+    // 1. DETECT SPECIFIC OUTCOME (Deepest Level)
+    const outcomeMatch = str.match(outcomeRegex);
+    if (outcomeMatch) {
+      if (currentSubtopic) {
+        const content = outcomeMatch[2].trim();
+        if (curriculum === 'obc') {
+          currentSubtopic.specificOutcomes.push(content);
+        } else {
+          currentSubtopic.competencies.push(content);
+        }
+      }
+      return; // Done with this line
+    }
+
+    // 2. DETECT SUBTOPIC
+    const subtopicMatch = str.match(subtopicRegex);
+    if (subtopicMatch) {
+      if (currentTopic) {
+        currentSubtopic = {
+          name: subtopicMatch[2].trim(),
+          // Initialize all arrays
+          competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
+          specificOutcomes: [], knowledge: [], skills: [], values: []
+        };
+        currentTopic.subtopics.push(currentSubtopic);
       }
       return;
     }
 
-    // 2. Check for Subtopic
-    const subtopicMatch = cleanLine.match(subtopicRegex);
-    if (subtopicMatch && currentTopic) {
-      currentSubtopic = {
-        name: subtopicMatch[2].trim(),
-        competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
-        specificOutcomes: [], knowledge: [], skills: [], values: []
-      };
-      currentTopic.subtopics.push(currentSubtopic);
-      return;
-    }
-
-    // 3. Check for Topic
-    const topicMatch = cleanLine.match(topicRegex);
+    // 3. DETECT TOPIC
+    const topicMatch = str.match(topicRegex);
     if (topicMatch) {
+      // Create new topic
       currentTopic = {
-        name: topicMatch[2].trim(),
+        name: topicMatch[0].trim(), // Keep the number "10.1 GENERAL PHYSICS"
         subtopics: []
       };
       topics.push(currentTopic);
-      currentSubtopic = null;
+      currentSubtopic = null; // Reset subtopic
       return;
     }
 
-    // 4. Content Fallback (Knowledge/Skills/Values)
-    // Capture bullet points, dashes, or lines that look like content
-    if (currentSubtopic && (cleanLine.startsWith('•') || cleanLine.startsWith('-') || cleanLine.startsWith('') || cleanLine.length > 5)) {
-       const contentText = cleanLine.replace(/^[•\-\s]+/, '').trim();
-       // Filter out garbage short lines
-       if (contentText.length < 3) return;
-
-       if (curriculum === 'obc') {
-           // Simple heuristic: distribute content to knowledge for now
-           currentSubtopic.knowledge.push(contentText);
-       } else {
-           currentSubtopic.scopeOfLessons.push(contentText);
-       }
+    // 4. DETECT CONTENT (Knowledge/Skills/Values)
+    // In the PDF, these are often bullet points or text following an outcome
+    if (currentSubtopic) {
+      if (str.startsWith('•') || str.startsWith('-') || str.startsWith('')) {
+        const content = str.replace(/^[•\-\s]+/, '').trim();
+        
+        // Simple heuristic to distribute content if we can't distinguish columns
+        // We default to Knowledge, but if it says "Comparing" or "Measuring", it's a Skill.
+        const lower = content.toLowerCase();
+        
+        if (curriculum === 'obc') {
+          if (lower.startsWith('asking') || lower.startsWith('participating') || lower.startsWith('appreciating') || lower.startsWith('being aware')) {
+            currentSubtopic.values.push(content);
+          } else if (lower.startsWith('measuring') || lower.startsWith('calculating') || lower.startsWith('comparing') || lower.startsWith('identifying')) {
+            currentSubtopic.skills.push(content);
+          } else {
+            currentSubtopic.knowledge.push(content);
+          }
+        } else {
+          // For CBC, map to Scope or Activities
+          if (lower.startsWith('measuring') || lower.startsWith('calculating')) {
+             currentSubtopic.activities.push(content);
+          } else {
+             currentSubtopic.scopeOfLessons.push(content);
+          }
+        }
+      }
     }
   });
 
@@ -132,7 +163,7 @@ function parseSyllabusLocally(text, curriculum, subject) {
       topics
     };
   }
-  return null; 
+  return null;
 }
 
 // --- ROUTES ---
@@ -151,7 +182,7 @@ app.post('/api/generate-document', async (req, res) => {
   }
 });
 
-// 2. PARSE & SAVE SYLLABUS (FILE UPLOAD SUPPORT)
+// 2. PARSE & SAVE SYLLABUS
 app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
   try {
     const { curriculum, subject } = req.body;
@@ -163,57 +194,37 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
 
     console.log(`📝 Processing file for ${subject} (${curriculum})...`);
 
-    // EXTRACT TEXT FROM PDF
+    // EXTRACT TEXT
     let fileText = '';
     if (file.mimetype === 'application/pdf') {
       const pdfData = await pdf(file.buffer);
       fileText = pdfData.text;
     } else {
-      // Assume text/plain for now
       fileText = file.buffer.toString('utf-8');
     }
 
-    // STEP 1: Try Local Regex Parsing first
-    const localData = parseSyllabusLocally(fileText, curriculum, subject);
-    
-    let parsedData = null;
+    // STEP 1: Use the new ZAMBIAN STREAM PARSER
+    // This bypasses AI for structure and uses the strict numbering system
+    let parsedData = parseZambianSyllabus(fileText, curriculum, subject);
 
-    if (localData) {
-      console.log("✅ Local Regex Parsing Successful!");
-      parsedData = localData;
-    } else {
-      console.log("⚠️ Local parsing failed. Falling back to Claude AI...");
-      
-      // STEP 2: Fallback to Claude AI
-      let systemPrompt = '';
-      if (curriculum === 'cbc') {
-        systemPrompt = `
-          You are a strict data extraction engine for Zambian CBC Syllabi.
-          TASK: Extract syllabus structure from the provided text for ${subject}.
-          CRITICAL: Extract ONLY data explicitly present. Return JSON format.
-          Structure: Topic -> Subtopic -> Competencies, Activities, Standards.
-        `;
-      } else {
-        systemPrompt = `
-          You are a strict data extraction engine for Zambian OBC Syllabi.
-          TASK: Extract syllabus structure from the provided text for ${subject}.
-          CRITICAL: Extract ONLY data explicitly present. Return JSON format.
-          Structure: Topic -> Subtopic -> Specific Outcomes -> Content.
-        `;
-      }
-
-      const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileText.substring(0, 100000)}\n\nReturn ONLY the JSON object.`;
-      const rawResponse = await callClaude(fullPrompt);
+    if (!parsedData) {
+      console.log("⚠️ Numbering pattern not found. Falling back to AI...");
+      // Fallback to AI only if the strict numbering fails completely
+      const prompt = `Extract syllabus structure for ${subject}. Return JSON. Text: ${fileText.substring(0, 50000)}`;
+      const rawResponse = await callClaude(prompt);
       const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("No JSON found in response");
-      parsedData = JSON.parse(jsonMatch[0]);
+      if (jsonMatch) parsedData = JSON.parse(jsonMatch[0]);
+    }
+
+    if (!parsedData || !parsedData.topics || parsedData.topics.length === 0) {
+      return res.status(400).json({ error: 'Could not extract any topics. Ensure PDF is text-readable.' });
     }
 
     // Save to MongoDB
     const newSyllabus = new Syllabus(parsedData);
     await newSyllabus.save();
 
-    console.log(`✅ Saved ${subject} syllabus to DB.`);
+    console.log(`✅ Saved ${subject} syllabus with ${parsedData.topics.length} topics.`);
     res.json({ success: true, syllabus: newSyllabus });
 
   } catch (error) {
