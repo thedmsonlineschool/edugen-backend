@@ -25,9 +25,9 @@ app.use(cors({
 app.use(express.json());
 
 /* -----------------------------
-   DATABASE CONNECTION
+   DATABASE CONNECTION (✅ FIXED)
 ------------------------------ */
-mongoose.connect(process.env.MONGO_URI, {
+mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
@@ -77,12 +77,10 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
 
   for (const line of lines) {
 
-    // Skip table headers ONLY
     if (/^topic$|^sub\s*topic$|^specific outcomes?$|^content$/i.test(line)) {
       continue;
     }
 
-    // Handle split numbering
     if (numberOnly(line)) {
       pendingNumber = line;
       continue;
@@ -100,7 +98,6 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
     const level = parsed.number.split('.').length;
     const fullText = `${parsed.number} ${parsed.text}`.trim();
 
-    // ---------------- TOPIC ----------------
     if (level === 2) {
       currentTopic = {
         name: fullText,
@@ -111,7 +108,6 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
       continue;
     }
 
-    // ---------------- SUBTOPIC ----------------
     if (level === 3 && currentTopic) {
       currentSubtopic = {
         name: fullText,
@@ -128,13 +124,11 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
       continue;
     }
 
-    // ---------------- SPECIFIC OUTCOME ----------------
     if (level === 4 && currentSubtopic) {
       currentSubtopic.specificOutcomes.push(fullText);
       continue;
     }
 
-    // ---------------- CONTENT ----------------
     if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
       const content = line.replace(/^[-•]\s*/, '').trim();
       if (content.length < 3) continue;
@@ -169,7 +163,7 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
 }
 
 /* ============================================================
-   API ROUTES (MATCH STACKBLITZ)
+   API ROUTES
 ============================================================ */
 
 /* ---- PARSE & SAVE SYLLABUS ---- */
@@ -185,60 +179,4 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
       buffer: req.file.buffer
     });
 
-    console.log('========== RAW EXTRACTED TEXT ==========');
-    console.log(result.value.slice(0, 2000));
-    console.log('=======================================');
-
-    const parsed = parseZambianSyllabus(
-      result.value,
-      curriculum,
-      subject
-    );
-
-    if (!parsed) {
-      return res.status(400).json({ error: 'Parsing failed' });
-    }
-
-    const saved = await Syllabus.create(parsed);
-
-    res.json({
-      success: true,
-      syllabus: saved
-    });
-
-  } catch (err) {
-    console.error('❌ Upload error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ---- GET ALL SYLLABI ---- */
-app.get('/api/syllabi', async (req, res) => {
-  const syllabi = await Syllabus.find().sort({ createdAt: -1 });
-  res.json(syllabi);
-});
-
-/* ---- GET SINGLE SYLLABUS ---- */
-app.get('/api/syllabi/:id', async (req, res) => {
-  const syllabus = await Syllabus.findById(req.params.id);
-  res.json(syllabus);
-});
-
-/* ---- DELETE SYLLABUS ---- */
-app.delete('/api/syllabi/:id', async (req, res) => {
-  await Syllabus.findByIdAndDelete(req.params.id);
-  res.json({ success: true });
-});
-
-/* ---- HEALTH CHECK ---- */
-app.get('/ping', (req, res) => {
-  res.json({ message: 'EduGen backend is alive' });
-});
-
-/* -----------------------------
-   START SERVER
------------------------------- */
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () =>
-  console.log(`🚀 EduGen AI backend running on port ${PORT}`)
-);
+    const parsed
