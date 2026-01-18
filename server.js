@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
 const pdf = require('pdf-parse');
-const mammoth = require('mammoth'); // ✅ NEW: For Word Docs
+const mammoth = require('mammoth'); 
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -54,17 +54,17 @@ async function callClaude(prompt) {
   }
 }
 
-// --- HELPER: ZAMBIAN SYLLABUS STREAM PARSER ---
+// --- HELPER: ZAMBIAN SYLLABUS SKELETON PARSER ---
+// Strictly follows numbering. Ignores Content/Knowledge/Skills/Values to prevent errors.
 function parseZambianSyllabus(text, curriculum, subject) {
   
-  // 1. PRE-PROCESSING
-  // Word docs might have different spacing. We normalize it.
+  // 1. PRE-PROCESSING: Normalize text
   let cleanText = text
     .replace(/\r\n/g, '\n')
+    // Force newlines before numbers to un-flatten PDF text
     .replace(/(\d+\.\d+\s)/g, '\n$1')       
     .replace(/(\d+\.\d+\.\d+\s)/g, '\n$1')  
-    .replace(/(\d+\.\d+\.\d+\.\d+\s)/g, '\n$1') 
-    .replace(/•/g, '\n•'); 
+    .replace(/(\d+\.\d+\.\d+\.\d+\s)/g, '\n$1');
 
   const lines = cleanText.split('\n');
   const topics = [];
@@ -72,19 +72,20 @@ function parseZambianSyllabus(text, curriculum, subject) {
   let currentTopic = null;
   let currentSubtopic = null;
 
-  // Regex Patterns (Flexible for whitespace)
-  const topicRegex = /^\s*(\d+\.\d+)\s+(.+)/;         
-  const subtopicRegex = /^\s*(\d+\.\d+\.\d+)\s+(.+)/; 
-  const outcomeRegex = /^\s*(\d+\.\d+\.\d+\.\d+)\s+(.+)/; 
+  // Regex Patterns (Strict Numbering)
+  // Matches "10.1" or "10.1." followed by text
+  const topicRegex = /^\s*(\d+\.\d+)\.?\s+(.+)/;         
+  const subtopicRegex = /^\s*(\d+\.\d+\.\d+)\.?\s+(.+)/; 
+  const outcomeRegex = /^\s*(\d+\.\d+\.\d+\.\d+)\.?\s+(.+)/; 
 
   lines.forEach(line => {
     const str = line.trim();
     if (!str) return;
     
-    // Skip headers/footers
-    if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC SUB TOPIC')) return;
+    // Skip headers/footers/table titles
+    if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC') || str.includes('CONTENT')) return;
 
-    // 1. DETECT SPECIFIC OUTCOME
+    // 1. DETECT SPECIFIC OUTCOME (Deepest Level - 4 digits)
     const outcomeMatch = str.match(outcomeRegex);
     if (outcomeMatch) {
       if (currentSubtopic) {
@@ -98,12 +99,13 @@ function parseZambianSyllabus(text, curriculum, subject) {
       return; 
     }
 
-    // 2. DETECT SUBTOPIC
+    // 2. DETECT SUBTOPIC (3 digits)
     const subtopicMatch = str.match(subtopicRegex);
     if (subtopicMatch) {
       if (currentTopic) {
         currentSubtopic = {
           name: subtopicMatch[2].trim(),
+          // Initialize arrays (Content fields left empty intentionally)
           competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
           specificOutcomes: [], knowledge: [], skills: [], values: []
         };
@@ -112,11 +114,11 @@ function parseZambianSyllabus(text, curriculum, subject) {
       return;
     }
 
-    // 3. DETECT TOPIC
+    // 3. DETECT TOPIC (2 digits)
     const topicMatch = str.match(topicRegex);
     if (topicMatch) {
       currentTopic = {
-        name: topicMatch[0].trim(), 
+        name: topicMatch[0].trim(), // Keep the number e.g. "10.1 GENERAL PHYSICS"
         subtopics: []
       };
       topics.push(currentTopic);
@@ -124,31 +126,8 @@ function parseZambianSyllabus(text, curriculum, subject) {
       return;
     }
 
-    // 4. DETECT CONTENT
-    if (currentSubtopic) {
-      // Check for bullet points or lines that are clearly content
-      if (str.startsWith('•') || str.startsWith('-') || str.startsWith('') || (str.length > 10 && !str.match(/^\d/))) {
-        const content = str.replace(/^[•\-\s]+/, '').trim();
-        
-        const lower = content.toLowerCase();
-        
-        if (curriculum === 'obc') {
-          if (lower.startsWith('asking') || lower.startsWith('participating') || lower.startsWith('appreciating') || lower.startsWith('being aware')) {
-            currentSubtopic.values.push(content);
-          } else if (lower.startsWith('measuring') || lower.startsWith('calculating') || lower.startsWith('comparing') || lower.startsWith('identifying')) {
-            currentSubtopic.skills.push(content);
-          } else {
-            currentSubtopic.knowledge.push(content);
-          }
-        } else {
-          if (lower.startsWith('measuring') || lower.startsWith('calculating')) {
-             currentSubtopic.activities.push(content);
-          } else {
-             currentSubtopic.scopeOfLessons.push(content);
-          }
-        }
-      }
-    }
+    // 4. IGNORE EVERYTHING ELSE
+    // We intentionally skip Knowledge/Skills/Values text here to avoid confusion.
   });
 
   if (topics.length > 0) {
@@ -193,13 +172,11 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     // EXTRACT TEXT
     let fileText = '';
     
-    // ✅ WORD DOCUMENT SUPPORT
     if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
        const result = await mammoth.extractRawText({ buffer: file.buffer });
        fileText = result.value;
        console.log("✅ Extracted text from Word Doc");
     } 
-    // ✅ PDF SUPPORT
     else if (file.mimetype === 'application/pdf') {
        const pdfData = await pdf(file.buffer);
        fileText = pdfData.text;
@@ -208,7 +185,7 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
        fileText = file.buffer.toString('utf-8');
     }
 
-    // STEP 1: Use the ZAMBIAN STREAM PARSER
+    // STEP 1: Use the SKELETON PARSER (Strict Numbering)
     let parsedData = parseZambianSyllabus(fileText, curriculum, subject);
 
     if (!parsedData) {
@@ -220,7 +197,7 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     }
 
     if (!parsedData || !parsedData.topics || parsedData.topics.length === 0) {
-      return res.status(400).json({ error: 'Could not extract any topics. Ensure file is text-readable.' });
+      return res.status(400).json({ error: 'Could not extract any topics. Ensure file uses standard numbering (10.1, 10.1.1).' });
     }
 
     // Save to MongoDB
