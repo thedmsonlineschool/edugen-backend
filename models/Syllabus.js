@@ -5,7 +5,7 @@ const SubtopicSchema = new mongoose.Schema({
   
   // --- CBC FIELDS ---
   competencies: { type: [String], default: [] },      // "Specific Competences"
-  scopeOfLessons: { type: [String], default: [] },    // Usually empty on parse, filled by AI later
+  scopeOfLessons: { type: [String], default: [] },    // AI-generated later
   activities: { type: [String], default: [] },        // "Learning Activities"
   expectedStandards: { type: [String], default: [] }, // "Expected Standards"
   
@@ -29,9 +29,9 @@ const SyllabusSchema = new mongoose.Schema({
     enum: ['cbc', 'obc'] 
   },
   form: { type: String, required: true }, // e.g., "Form 1" or "Grade 10"
-  topics: [TopicSchema],
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
+  topics: [TopicSchema]
+}, { 
+  timestamps: true // ✅ AUTOMATICALLY manages createdAt and updatedAt
 });
 
 module.exports = mongoose.model('Syllabus', SyllabusSchema);
