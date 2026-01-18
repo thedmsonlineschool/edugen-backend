@@ -54,8 +54,8 @@ async function callClaude(prompt) {
   }
 }
 
-// --- HELPER: ZAMBIAN SYLLABUS SKELETON PARSER ---
-// Strictly follows numbering. Ignores Content/Knowledge/Skills/Values to prevent errors.
+// --- HELPER: ZAMBIAN SYLLABUS SEGMENT PARSER ---
+// Strictly counts dot-separated segments to determine hierarchy.
 function parseZambianSyllabus(text, curriculum, subject) {
   
   // 1. PRE-PROCESSING: Normalize text
@@ -72,11 +72,9 @@ function parseZambianSyllabus(text, curriculum, subject) {
   let currentTopic = null;
   let currentSubtopic = null;
 
-  // Regex Patterns (Strict Numbering)
-  // Matches "10.1" or "10.1." followed by text
-  const topicRegex = /^\s*(\d+\.\d+)\.?\s+(.+)/;         
-  const subtopicRegex = /^\s*(\d+\.\d+\.\d+)\.?\s+(.+)/; 
-  const outcomeRegex = /^\s*(\d+\.\d+\.\d+\.\d+)\.?\s+(.+)/; 
+  // Regex to capture the number part and the text part
+  // e.g. "10.1.1.1 Distinguish..." -> match[1]="10.1.1.1", match[2]="Distinguish..."
+  const numberRegex = /^\s*(\d+(?:\.\d+)+)\.?\s+(.+)/;
 
   lines.forEach(line => {
     const str = line.trim();
@@ -85,49 +83,73 @@ function parseZambianSyllabus(text, curriculum, subject) {
     // Skip headers/footers/table titles
     if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC') || str.includes('CONTENT')) return;
 
-    // 1. DETECT SPECIFIC OUTCOME (Deepest Level - 4 digits)
-    const outcomeMatch = str.match(outcomeRegex);
-    if (outcomeMatch) {
-      if (currentSubtopic) {
-        const content = outcomeMatch[2].trim();
-        if (curriculum === 'obc') {
-          currentSubtopic.specificOutcomes.push(content);
-        } else {
-          currentSubtopic.competencies.push(content);
+    const match = str.match(numberRegex);
+    
+    if (match) {
+      const numberPart = match[1]; // e.g. "10.1" or "10.1.1"
+      const textPart = match[2].trim(); // e.g. "General Physics"
+
+      // Count segments by splitting by dot
+      // "10.1" -> ["10", "1"] -> length 2
+      // "10.1.1" -> ["10", "1", "1"] -> length 3
+      // "10.1.1.1" -> ["10", "1", "1", "1"] -> length 4
+      const segments = numberPart.split('.').length;
+
+      // --- LEVEL 1: TOPIC (2 Segments: 10.1) ---
+      if (segments === 2) {
+        currentTopic = {
+          name: `${numberPart} ${textPart}`, // Keep original number
+          subtopics: []
+        };
+        topics.push(currentTopic);
+        currentSubtopic = null; // Reset subtopic
+      }
+
+      // --- LEVEL 2: SUBTOPIC (3 Segments: 10.1.1) ---
+      else if (segments === 3) {
+        if (currentTopic) {
+          currentSubtopic = {
+            name: `${numberPart} ${textPart}`, // Keep original number
+            // Initialize arrays
+            competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
+            specificOutcomes: [], knowledge: [], skills: [], values: []
+          };
+          currentTopic.subtopics.push(currentSubtopic);
         }
       }
-      return; 
-    }
 
-    // 2. DETECT SUBTOPIC (3 digits)
-    const subtopicMatch = str.match(subtopicRegex);
-    if (subtopicMatch) {
-      if (currentTopic) {
-        currentSubtopic = {
-          name: subtopicMatch[2].trim(),
-          // Initialize arrays (Content fields left empty intentionally)
-          competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
-          specificOutcomes: [], knowledge: [], skills: [], values: []
-        };
-        currentTopic.subtopics.push(currentSubtopic);
+      // --- LEVEL 3: SPECIFIC OUTCOME (4 Segments: 10.1.1.1) ---
+      else if (segments === 4) {
+        if (currentSubtopic) {
+          // Add to correct array based on curriculum
+          if (curriculum === 'obc') {
+            currentSubtopic.specificOutcomes.push(`${numberPart} ${textPart}`);
+          } else {
+            currentSubtopic.competencies.push(`${numberPart} ${textPart}`);
+          }
+        }
       }
-      return;
+    } 
+    // --- CONTENT HANDLING (No Number) ---
+    else if (currentSubtopic) {
+       // If line starts with bullet/dash, treat as content
+       if (str.startsWith('•') || str.startsWith('-') || str.startsWith('')) {
+          const content = str.replace(/^[•\-\s]+/, '').trim();
+          if (content.length > 3) {
+             // Simple heuristic for OBC content distribution
+             if (curriculum === 'obc') {
+                const lower = content.toLowerCase();
+                if (lower.startsWith('asking') || lower.startsWith('participating') || lower.startsWith('appreciating')) {
+                   currentSubtopic.values.push(content);
+                } else if (lower.startsWith('measuring') || lower.startsWith('calculating') || lower.startsWith('comparing')) {
+                   currentSubtopic.skills.push(content);
+                } else {
+                   currentSubtopic.knowledge.push(content);
+                }
+             }
+          }
+       }
     }
-
-    // 3. DETECT TOPIC (2 digits)
-    const topicMatch = str.match(topicRegex);
-    if (topicMatch) {
-      currentTopic = {
-        name: topicMatch[0].trim(), // Keep the number e.g. "10.1 GENERAL PHYSICS"
-        subtopics: []
-      };
-      topics.push(currentTopic);
-      currentSubtopic = null; 
-      return;
-    }
-
-    // 4. IGNORE EVERYTHING ELSE
-    // We intentionally skip Knowledge/Skills/Values text here to avoid confusion.
   });
 
   if (topics.length > 0) {
@@ -185,7 +207,7 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
        fileText = file.buffer.toString('utf-8');
     }
 
-    // STEP 1: Use the SKELETON PARSER (Strict Numbering)
+    // STEP 1: Use the SEGMENT PARSER (Strict Counting)
     let parsedData = parseZambianSyllabus(fileText, curriculum, subject);
 
     if (!parsedData) {
