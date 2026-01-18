@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const multer = require('multer'); // For file uploads
+const pdf = require('pdf-parse'); // For extracting text from PDF
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -12,7 +14,13 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Increased limit for very large syllabus texts
+app.use(express.json());
+
+// Configure Multer (Memory Storage for immediate parsing)
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
@@ -37,10 +45,7 @@ async function callClaude(prompt) {
     });
 
     const data = await response.json();
-    if (!response.ok) {
-      console.error("Claude API Error:", data);
-      throw new Error(data.error?.message || 'Claude API Error');
-    }
+    if (!response.ok) throw new Error(data.error?.message || 'Claude API Error');
     return data.content[0].text;
   } catch (error) {
     console.error('Claude API Call Failed:', error);
@@ -48,21 +53,24 @@ async function callClaude(prompt) {
   }
 }
 
-// --- HELPER: LOCAL REGEX PARSER (The Robust Fix) ---
+// --- HELPER: ROBUST LOCAL PARSER (Improved for PDF Text) ---
 function parseSyllabusLocally(text, curriculum, subject) {
   const lines = text.split('\n');
   const topics = [];
   let currentTopic = null;
   let currentSubtopic = null;
 
-  // Regex Patterns for Zambian Syllabus (e.g., 10.1, 10.1.1, 10.1.1.1)
-  const topicRegex = /^(\d+\.\d+)\s+(.+)/;       
-  const subtopicRegex = /^(\d+\.\d+\.\d+)\s+(.+)/; 
-  const outcomeRegex = /^(\d+\.\d+\.\d+\.\d+)\s+(.+)/; 
+  // Improved Regex: Allows whitespace at start (^\s*)
+  const topicRegex = /^\s*(\d+\.\d+)\s+(.+)/;       
+  const subtopicRegex = /^\s*(\d+\.\d+\.\d+)\s+(.+)/; 
+  const outcomeRegex = /^\s*(\d+\.\d+\.\d+\.\d+)\s+(.+)/; 
 
   lines.forEach(line => {
     const cleanLine = line.trim();
     if (!cleanLine) return;
+    
+    // Ignore Page Headers/Footers common in PDFs
+    if (cleanLine.includes('Physics 5054') || cleanLine.match(/^Grade \d+-\d+/)) return;
 
     // 1. Check for Specific Outcome (Deepest Level)
     const outcomeMatch = cleanLine.match(outcomeRegex);
@@ -101,9 +109,12 @@ function parseSyllabusLocally(text, curriculum, subject) {
     }
 
     // 4. Content Fallback (Knowledge/Skills/Values)
-    // If line starts with bullet/dash and we are in a subtopic
-    if (currentSubtopic && (cleanLine.startsWith('•') || cleanLine.startsWith('-') || cleanLine.startsWith(''))) {
+    // Capture bullet points, dashes, or lines that look like content
+    if (currentSubtopic && (cleanLine.startsWith('•') || cleanLine.startsWith('-') || cleanLine.startsWith('') || cleanLine.length > 5)) {
        const contentText = cleanLine.replace(/^[•\-\s]+/, '').trim();
+       // Filter out garbage short lines
+       if (contentText.length < 3) return;
+
        if (curriculum === 'obc') {
            // Simple heuristic: distribute content to knowledge for now
            currentSubtopic.knowledge.push(contentText);
@@ -121,7 +132,7 @@ function parseSyllabusLocally(text, curriculum, subject) {
       topics
     };
   }
-  return null; // Failed to parse locally
+  return null; 
 }
 
 // --- ROUTES ---
@@ -140,19 +151,30 @@ app.post('/api/generate-document', async (req, res) => {
   }
 });
 
-// 2. PARSE & SAVE SYLLABUS (Hybrid: Local -> AI)
-app.post('/api/syllabi/parse', async (req, res) => {
+// 2. PARSE & SAVE SYLLABUS (FILE UPLOAD SUPPORT)
+app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
   try {
-    const { fileContent, curriculum, subject } = req.body;
+    const { curriculum, subject } = req.body;
+    const file = req.file;
 
-    if (!fileContent || !curriculum || !subject) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!file || !curriculum || !subject) {
+      return res.status(400).json({ error: 'Missing file, curriculum, or subject' });
     }
 
-    console.log(`📝 Parsing ${curriculum.toUpperCase()} syllabus for ${subject}...`);
+    console.log(`📝 Processing file for ${subject} (${curriculum})...`);
 
-    // STEP 1: Try Local Regex Parsing first (Fast & Accurate for numbered text)
-    const localData = parseSyllabusLocally(fileContent, curriculum, subject);
+    // EXTRACT TEXT FROM PDF
+    let fileText = '';
+    if (file.mimetype === 'application/pdf') {
+      const pdfData = await pdf(file.buffer);
+      fileText = pdfData.text;
+    } else {
+      // Assume text/plain for now
+      fileText = file.buffer.toString('utf-8');
+    }
+
+    // STEP 1: Try Local Regex Parsing first
+    const localData = parseSyllabusLocally(fileText, curriculum, subject);
     
     let parsedData = null;
 
@@ -162,7 +184,7 @@ app.post('/api/syllabi/parse', async (req, res) => {
     } else {
       console.log("⚠️ Local parsing failed. Falling back to Claude AI...");
       
-      // STEP 2: Fallback to Claude AI (for unstructured text)
+      // STEP 2: Fallback to Claude AI
       let systemPrompt = '';
       if (curriculum === 'cbc') {
         systemPrompt = `
@@ -180,7 +202,7 @@ app.post('/api/syllabi/parse', async (req, res) => {
         `;
       }
 
-      const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileContent.substring(0, 100000)}\n\nReturn ONLY the JSON object.`; // Limit text length
+      const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileText.substring(0, 100000)}\n\nReturn ONLY the JSON object.`;
       const rawResponse = await callClaude(fullPrompt);
       const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("No JSON found in response");
@@ -188,8 +210,6 @@ app.post('/api/syllabi/parse', async (req, res) => {
     }
 
     // Save to MongoDB
-    // Check if syllabus exists and update, or create new
-    // (Optional: For now we just create new to avoid complexity)
     const newSyllabus = new Syllabus(parsedData);
     await newSyllabus.save();
 
