@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-// Dynamic import for node-fetch (required for v3+)
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -13,8 +12,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-// Increased limit to 10mb to handle large syllabus text pastes
-app.use(express.json({ limit: '10mb' })); 
+app.use(express.json({ limit: '10mb' }));
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
@@ -27,25 +25,19 @@ async function callClaude(prompt) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        // ✅ FIXED: Using CLAUDE_API_KEY to match your Railway variables
-        'x-api-key': process.env.CLAUDE_API_KEY, 
+        'x-api-key': process.env.CLAUDE_API_KEY,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20240620', 
+        model: 'claude-3-5-sonnet-20240620',
         max_tokens: 4096,
         messages: [{ role: 'user', content: prompt }]
       })
     });
 
     const data = await response.json();
-    
-    if (!response.ok) {
-      console.error("Claude API Error Details:", data);
-      throw new Error(data.error?.message || 'Claude API Error');
-    }
-    
+    if (!response.ok) throw new Error(data.error?.message || 'Claude API Error');
     return data.content[0].text;
   } catch (error) {
     console.error('Claude API Call Failed:', error);
@@ -55,7 +47,7 @@ async function callClaude(prompt) {
 
 // --- ROUTES ---
 
-// 1. GENERATE DOCUMENT (Existing Endpoint)
+// 1. GENERATE DOCUMENT
 app.post('/api/generate-document', async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -66,7 +58,7 @@ app.post('/api/generate-document', async (req, res) => {
   }
 });
 
-// 2. PARSE & SAVE SYLLABUS (New Endpoint for Phase 6A)
+// 2. PARSE & SAVE SYLLABUS
 app.post('/api/syllabi/parse', async (req, res) => {
   try {
     const { fileContent, curriculum, subject } = req.body;
@@ -77,7 +69,6 @@ app.post('/api/syllabi/parse', async (req, res) => {
 
     console.log(`📝 Parsing ${curriculum.toUpperCase()} syllabus for ${subject}...`);
 
-    // Construct Prompt based on Curriculum Type
     let systemPrompt = '';
     if (curriculum === 'cbc') {
       systemPrompt = `
@@ -94,7 +85,7 @@ app.post('/api/syllabi/parse', async (req, res) => {
         {
           "curriculumType": "cbc",
           "subject": "${subject}",
-          "form": "Form 1", 
+          "form": "Form 1",
           "topics": [
             {
               "name": "Topic Name",
@@ -105,4 +96,102 @@ app.post('/api/syllabi/parse', async (req, res) => {
                   "scopeOfLessons": [],
                   "activities": ["Activity 1"],
                   "expectedStandards": ["Standard 1"],
-                  "specificOutcome
+                  "specificOutcomes": [],
+                  "knowledge": [],
+                  "skills": [],
+                  "values": []
+                }
+              ]
+            }
+          ]
+        }
+      `;
+    } else {
+      systemPrompt = `
+        You are a strict data extraction engine for Zambian OBC Syllabi.
+        TASK: Extract syllabus structure from the provided text for ${subject}.
+        
+        CRITICAL INSTRUCTIONS:
+        1. Extract ONLY data explicitly present. Do NOT hallucinate.
+        2. Ignore page headers/footers.
+        3. Structure: Topic -> Subtopic -> Specific Outcomes -> Content (Knowledge, Skills, Values).
+        
+        REQUIRED JSON FORMAT:
+        {
+          "curriculumType": "obc",
+          "subject": "${subject}",
+          "form": "Grade 10",
+          "topics": [
+            {
+              "name": "Topic Name",
+              "subtopics": [
+                {
+                  "name": "Subtopic Name",
+                  "specificOutcomes": ["Outcome 1", "Outcome 2"],
+                  "knowledge": ["Knowledge item"],
+                  "skills": ["Skill item"],
+                  "values": ["Value item"],
+                  "competencies": [],
+                  "scopeOfLessons": [],
+                  "activities": [],
+                  "expectedStandards": []
+                }
+              ]
+            }
+          ]
+        }
+      `;
+    }
+
+    const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileContent}\n\nReturn ONLY the JSON object.`;
+    const rawResponse = await callClaude(fullPrompt);
+    const cleanJson = rawResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsedData = JSON.parse(cleanJson);
+
+    const newSyllabus = new Syllabus(parsedData);
+    await newSyllabus.save();
+
+    console.log(`✅ Saved ${subject} syllabus to DB.`);
+    res.json({ success: true, syllabus: newSyllabus });
+
+  } catch (error) {
+    console.error('Parsing/Saving Error:', error);
+    res.status(500).json({ error: 'Failed to parse and save syllabus.' });
+  }
+});
+
+// 3. GET ALL SYLLABI
+app.get('/api/syllabi', async (req, res) => {
+  try {
+    const syllabi = await Syllabus.find().select('subject curriculumType form updatedAt');
+    res.json(syllabi);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch syllabi' });
+  }
+});
+
+// 4. GET SINGLE SYLLABUS
+app.get('/api/syllabi/:id', async (req, res) => {
+  try {
+    const syllabus = await Syllabus.findById(req.params.id);
+    if (!syllabus) return res.status(404).json({ error: 'Syllabus not found' });
+    res.json(syllabus);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch syllabus' });
+  }
+});
+
+// 5. DELETE SYLLABUS
+app.delete('/api/syllabi/:id', async (req, res) => {
+  try {
+    await Syllabus.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Syllabus deleted' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete syllabus' });
+  }
+});
+
+// Start Server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
