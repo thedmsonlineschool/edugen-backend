@@ -6,7 +6,7 @@ const cors = require('cors');
 const multer = require('multer');
 const mammoth = require('mammoth');
 
-const Syllabus = require('./syllabus');
+const Syllabus = require('./models/Syllabus');
 
 const app = express();
 
