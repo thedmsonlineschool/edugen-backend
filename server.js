@@ -54,11 +54,11 @@ async function callClaude(prompt) {
   }
 }
 
-// --- HELPER: ZAMBIAN SYLLABUS SEGMENT PARSER ---
-// Strictly counts dot-separated segments to determine hierarchy.
+// --- HELPER: STRICT HIERARCHY PARSER ---
+// Enforces that 10.1.1 must belong to 10.1, and 10.1.1.1 must belong to 10.1.1
 function parseZambianSyllabus(text, curriculum, subject) {
   
-  // 1. PRE-PROCESSING: Normalize text
+  // 1. PRE-PROCESSING
   let cleanText = text
     .replace(/\r\n/g, '\n')
     // Force newlines before numbers to un-flatten PDF text
@@ -73,44 +73,40 @@ function parseZambianSyllabus(text, curriculum, subject) {
   let currentSubtopic = null;
 
   // Regex to capture the number part and the text part
-  // e.g. "10.1.1.1 Distinguish..." -> match[1]="10.1.1.1", match[2]="Distinguish..."
   const numberRegex = /^\s*(\d+(?:\.\d+)+)\.?\s+(.+)/;
 
   lines.forEach(line => {
     const str = line.trim();
     if (!str) return;
     
-    // Skip headers/footers/table titles
+    // Skip headers/footers
     if (str.includes('Physics 5054') || str.includes('Grade 10-12') || str.includes('TOPIC') || str.includes('CONTENT')) return;
 
     const match = str.match(numberRegex);
     
     if (match) {
-      const numberPart = match[1]; // e.g. "10.1" or "10.1.1"
+      const numberPart = match[1]; // e.g. "10.1"
       const textPart = match[2].trim(); // e.g. "General Physics"
-
-      // Count segments by splitting by dot
-      // "10.1" -> ["10", "1"] -> length 2
-      // "10.1.1" -> ["10", "1", "1"] -> length 3
-      // "10.1.1.1" -> ["10", "1", "1", "1"] -> length 4
       const segments = numberPart.split('.').length;
 
       // --- LEVEL 1: TOPIC (2 Segments: 10.1) ---
       if (segments === 2) {
         currentTopic = {
-          name: `${numberPart} ${textPart}`, // Keep original number
+          number: numberPart, // Store number for validation
+          name: `${numberPart} ${textPart}`, 
           subtopics: []
         };
         topics.push(currentTopic);
-        currentSubtopic = null; // Reset subtopic
+        currentSubtopic = null; 
       }
 
       // --- LEVEL 2: SUBTOPIC (3 Segments: 10.1.1) ---
       else if (segments === 3) {
-        if (currentTopic) {
+        // STRICT VALIDATION: Must start with parent topic number
+        if (currentTopic && numberPart.startsWith(currentTopic.number)) {
           currentSubtopic = {
-            name: `${numberPart} ${textPart}`, // Keep original number
-            // Initialize arrays
+            number: numberPart, // Store number for validation
+            name: `${numberPart} ${textPart}`,
             competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
             specificOutcomes: [], knowledge: [], skills: [], values: []
           };
@@ -120,8 +116,8 @@ function parseZambianSyllabus(text, curriculum, subject) {
 
       // --- LEVEL 3: SPECIFIC OUTCOME (4 Segments: 10.1.1.1) ---
       else if (segments === 4) {
-        if (currentSubtopic) {
-          // Add to correct array based on curriculum
+        // STRICT VALIDATION: Must start with parent subtopic number
+        if (currentSubtopic && numberPart.startsWith(currentSubtopic.number)) {
           if (curriculum === 'obc') {
             currentSubtopic.specificOutcomes.push(`${numberPart} ${textPart}`);
           } else {
@@ -132,11 +128,9 @@ function parseZambianSyllabus(text, curriculum, subject) {
     } 
     // --- CONTENT HANDLING (No Number) ---
     else if (currentSubtopic) {
-       // If line starts with bullet/dash, treat as content
        if (str.startsWith('•') || str.startsWith('-') || str.startsWith('')) {
           const content = str.replace(/^[•\-\s]+/, '').trim();
           if (content.length > 3) {
-             // Simple heuristic for OBC content distribution
              if (curriculum === 'obc') {
                 const lower = content.toLowerCase();
                 if (lower.startsWith('asking') || lower.startsWith('participating') || lower.startsWith('appreciating')) {
@@ -207,7 +201,7 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
        fileText = file.buffer.toString('utf-8');
     }
 
-    // STEP 1: Use the SEGMENT PARSER (Strict Counting)
+    // STEP 1: Use the STRICT HIERARCHY PARSER
     let parsedData = parseZambianSyllabus(fileText, curriculum, subject);
 
     if (!parsedData) {
