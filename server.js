@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-// Dynamic import for node-fetch (required for v3+ in CommonJS)
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 // Import Model
@@ -13,7 +12,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Increased limit for large syllabus text
+app.use(express.json({ limit: '50mb' })); // Increased limit for very large syllabus texts
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
@@ -26,7 +25,7 @@ async function callClaude(prompt) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'x-api-key': process.env.CLAUDE_API_KEY, // ✅ Correct Variable Name
+        'x-api-key': process.env.CLAUDE_API_KEY,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json'
       },
@@ -49,9 +48,84 @@ async function callClaude(prompt) {
   }
 }
 
+// --- HELPER: LOCAL REGEX PARSER (The Robust Fix) ---
+function parseSyllabusLocally(text, curriculum, subject) {
+  const lines = text.split('\n');
+  const topics = [];
+  let currentTopic = null;
+  let currentSubtopic = null;
+
+  // Regex Patterns for Zambian Syllabus (e.g., 10.1, 10.1.1, 10.1.1.1)
+  const topicRegex = /^(\d+\.\d+)\s+(.+)/;       
+  const subtopicRegex = /^(\d+\.\d+\.\d+)\s+(.+)/; 
+  const outcomeRegex = /^(\d+\.\d+\.\d+\.\d+)\s+(.+)/; 
+
+  lines.forEach(line => {
+    const cleanLine = line.trim();
+    if (!cleanLine) return;
+
+    // 1. Check for Specific Outcome (Deepest Level)
+    const outcomeMatch = cleanLine.match(outcomeRegex);
+    if (outcomeMatch && currentSubtopic) {
+      const outcomeText = outcomeMatch[2].trim();
+      if (curriculum === 'obc') {
+        currentSubtopic.specificOutcomes.push(outcomeText);
+      } else {
+        currentSubtopic.competencies.push(outcomeText);
+      }
+      return;
+    }
+
+    // 2. Check for Subtopic
+    const subtopicMatch = cleanLine.match(subtopicRegex);
+    if (subtopicMatch && currentTopic) {
+      currentSubtopic = {
+        name: subtopicMatch[2].trim(),
+        competencies: [], scopeOfLessons: [], activities: [], expectedStandards: [],
+        specificOutcomes: [], knowledge: [], skills: [], values: []
+      };
+      currentTopic.subtopics.push(currentSubtopic);
+      return;
+    }
+
+    // 3. Check for Topic
+    const topicMatch = cleanLine.match(topicRegex);
+    if (topicMatch) {
+      currentTopic = {
+        name: topicMatch[2].trim(),
+        subtopics: []
+      };
+      topics.push(currentTopic);
+      currentSubtopic = null;
+      return;
+    }
+
+    // 4. Content Fallback (Knowledge/Skills/Values)
+    // If line starts with bullet/dash and we are in a subtopic
+    if (currentSubtopic && (cleanLine.startsWith('•') || cleanLine.startsWith('-') || cleanLine.startsWith(''))) {
+       const contentText = cleanLine.replace(/^[•\-\s]+/, '').trim();
+       if (curriculum === 'obc') {
+           // Simple heuristic: distribute content to knowledge for now
+           currentSubtopic.knowledge.push(contentText);
+       } else {
+           currentSubtopic.scopeOfLessons.push(contentText);
+       }
+    }
+  });
+
+  if (topics.length > 0) {
+    return {
+      subject,
+      curriculumType: curriculum,
+      form: curriculum === 'cbc' ? 'Form 1' : 'Grade 10', // Default
+      topics
+    };
+  }
+  return null; // Failed to parse locally
+}
+
 // --- ROUTES ---
 
-// 0. HEALTH CHECK (Required for Railway)
 app.get('/', (req, res) => res.send('EduGen AI Backend is Running 🚀'));
 app.get('/health', (req, res) => res.json({ status: 'ok', message: 'EduGen AI Backend is healthy' }));
 
@@ -66,7 +140,7 @@ app.post('/api/generate-document', async (req, res) => {
   }
 });
 
-// 2. PARSE & SAVE SYLLABUS
+// 2. PARSE & SAVE SYLLABUS (Hybrid: Local -> AI)
 app.post('/api/syllabi/parse', async (req, res) => {
   try {
     const { fileContent, curriculum, subject } = req.body;
@@ -77,90 +151,45 @@ app.post('/api/syllabi/parse', async (req, res) => {
 
     console.log(`📝 Parsing ${curriculum.toUpperCase()} syllabus for ${subject}...`);
 
-    let systemPrompt = '';
-    if (curriculum === 'cbc') {
-      systemPrompt = `
-        You are a strict data extraction engine for Zambian CBC Syllabi.
-        TASK: Extract syllabus structure from the provided text for ${subject}.
-        
-        CRITICAL INSTRUCTIONS:
-        1. Extract ONLY data explicitly present. Do NOT hallucinate.
-        2. Ignore page headers/footers.
-        3. Structure: Topic -> Subtopic -> Competencies, Activities, Standards.
-        4. 'Scope of Lessons' is usually NOT in the syllabus text. Return it as empty [].
-        
-        REQUIRED JSON FORMAT:
-        {
-          "curriculumType": "cbc",
-          "subject": "${subject}",
-          "form": "Form 1",
-          "topics": [
-            {
-              "name": "Topic Name",
-              "subtopics": [
-                {
-                  "name": "Subtopic Name",
-                  "competencies": ["Competency 1", "Competency 2"],
-                  "scopeOfLessons": [],
-                  "activities": ["Activity 1"],
-                  "expectedStandards": ["Standard 1"],
-                  "specificOutcomes": [],
-                  "knowledge": [],
-                  "skills": [],
-                  "values": []
-                }
-              ]
-            }
-          ]
-        }
-      `;
+    // STEP 1: Try Local Regex Parsing first (Fast & Accurate for numbered text)
+    const localData = parseSyllabusLocally(fileContent, curriculum, subject);
+    
+    let parsedData = null;
+
+    if (localData) {
+      console.log("✅ Local Regex Parsing Successful!");
+      parsedData = localData;
     } else {
-      systemPrompt = `
-        You are a strict data extraction engine for Zambian OBC Syllabi.
-        TASK: Extract syllabus structure from the provided text for ${subject}.
-        
-        CRITICAL INSTRUCTIONS:
-        1. Extract ONLY data explicitly present. Do NOT hallucinate.
-        2. Ignore page headers/footers.
-        3. Structure: Topic -> Subtopic -> Specific Outcomes -> Content (Knowledge, Skills, Values).
-        
-        REQUIRED JSON FORMAT:
-        {
-          "curriculumType": "obc",
-          "subject": "${subject}",
-          "form": "Grade 10",
-          "topics": [
-            {
-              "name": "Topic Name",
-              "subtopics": [
-                {
-                  "name": "Subtopic Name",
-                  "specificOutcomes": ["Outcome 1", "Outcome 2"],
-                  "knowledge": ["Knowledge item"],
-                  "skills": ["Skill item"],
-                  "values": ["Value item"],
-                  "competencies": [],
-                  "scopeOfLessons": [],
-                  "activities": [],
-                  "expectedStandards": []
-                }
-              ]
-            }
-          ]
-        }
-      `;
+      console.log("⚠️ Local parsing failed. Falling back to Claude AI...");
+      
+      // STEP 2: Fallback to Claude AI (for unstructured text)
+      let systemPrompt = '';
+      if (curriculum === 'cbc') {
+        systemPrompt = `
+          You are a strict data extraction engine for Zambian CBC Syllabi.
+          TASK: Extract syllabus structure from the provided text for ${subject}.
+          CRITICAL: Extract ONLY data explicitly present. Return JSON format.
+          Structure: Topic -> Subtopic -> Competencies, Activities, Standards.
+        `;
+      } else {
+        systemPrompt = `
+          You are a strict data extraction engine for Zambian OBC Syllabi.
+          TASK: Extract syllabus structure from the provided text for ${subject}.
+          CRITICAL: Extract ONLY data explicitly present. Return JSON format.
+          Structure: Topic -> Subtopic -> Specific Outcomes -> Content.
+        `;
+      }
+
+      const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileContent.substring(0, 100000)}\n\nReturn ONLY the JSON object.`; // Limit text length
+      const rawResponse = await callClaude(fullPrompt);
+      const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("No JSON found in response");
+      parsedData = JSON.parse(jsonMatch[0]);
     }
 
-    const fullPrompt = `${systemPrompt}\n\nSYLLABUS TEXT:\n${fileContent}\n\nReturn ONLY the JSON object.`;
-    const rawResponse = await callClaude(fullPrompt);
-
-    // ✅ Improved JSON Extraction Regex (Finds the first { and last })
-    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in response");
-    
-    const parsedData = JSON.parse(jsonMatch[0]);
-
     // Save to MongoDB
+    // Check if syllabus exists and update, or create new
+    // (Optional: For now we just create new to avoid complexity)
     const newSyllabus = new Syllabus(parsedData);
     await newSyllabus.save();
 
@@ -176,7 +205,6 @@ app.post('/api/syllabi/parse', async (req, res) => {
 // 3. GET ALL SYLLABI
 app.get('/api/syllabi', async (req, res) => {
   try {
-    // Select specific fields to keep the response light
     const syllabi = await Syllabus.find().select('subject curriculumType form topics.length updatedAt');
     res.json(syllabi);
   } catch (error) {
@@ -205,7 +233,6 @@ app.delete('/api/syllabi/:id', async (req, res) => {
   }
 });
 
-// Start Server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
