@@ -184,8 +184,32 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     const { curriculum, subject } = req.body;
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const result = await mammoth.extractRawText({ buffer: req.file.buffer });
-    const parsed = parseZambianSyllabus(result.value, curriculum, subject);
+let parsed;
+
+if (curriculum === 'cbc') {
+  // CBC syllabi are TABLE-BASED → preserve structure
+  const result = await mammoth.convertToHtml({
+    buffer: req.file.buffer
+  });
+
+  parsed = parseZambianSyllabus(
+    result.value,   // HTML with <table><tr><td>
+    curriculum,
+    subject
+  );
+
+} else {
+  // OBC syllabi are TEXT-BASED
+  const result = await mammoth.extractRawText({
+    buffer: req.file.buffer
+  });
+
+  parsed = parseZambianSyllabus(
+    result.value,
+    curriculum,
+    subject
+  );
+}
 
     if (!parsed) return res.status(400).json({ error: 'Parsing failed' });
 
