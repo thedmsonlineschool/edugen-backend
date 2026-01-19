@@ -122,46 +122,69 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
       currentSubtopic = null;
       continue;
     }
+if (level === 3 && currentTopic) {
+  currentSubtopic = {
+    name: fullText,
 
-    if (level === 3 && currentTopic) {
-      currentSubtopic = {
-        name: fullText,
-        competencies: [],
-        scopeOfLessons: [],
-        activities: [],
-        expectedStandards: [],
-        specificOutcomes: [],
-        knowledge: [],
-        skills: [],
-        values: []
-      };
-      currentTopic.subtopics.push(currentSubtopic);
-      continue;
-    }
+    // ===== CBC syllabus fields =====
+    competencies: [],
+    learningActivities: [],
+    expectedStandards: [],
+
+    // ===== OBC syllabus fields =====
+    specificOutcomes: [],
+    knowledge: [],
+    skills: [],
+    values: [],
+
+    // ===== Generated later by AI (NOT syllabus) =====
+    scopeOfLessons: []
+  };
+
+  currentTopic.subtopics.push(currentSubtopic);
+  continue;
+}
 
     if (level === 4 && currentSubtopic) {
       currentSubtopic.specificOutcomes.push(fullText);
       continue;
     }
+if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
+  const content = line.replace(/^[-•]\s*/, '').trim();
+  if (content.length < 3) continue;
 
-    if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
-      const content = line.replace(/^[-•]\s*/, '').trim();
-      if (content.length < 3) continue;
+  const lower = content.toLowerCase();
 
-      const lower = content.toLowerCase();
-
-      if (lower.startsWith('appreciat') || lower.startsWith('value')) {
-        currentSubtopic.values.push(content);
-      } else if (
-        lower.startsWith('measure') ||
-        lower.startsWith('calculate') ||
-        lower.startsWith('demonstrate')
-      ) {
-        currentSubtopic.skills.push(content);
-      } else {
-        currentSubtopic.knowledge.push(content);
-      }
+  // ===== CBC syllabus handling =====
+  if (curriculum === 'cbc') {
+    if (
+      lower.includes('demonstrat') ||
+      lower.includes('discuss') ||
+      lower.includes('investigat') ||
+      lower.includes('perform') ||
+      lower.includes('observe')
+    ) {
+      currentSubtopic.learningActivities.push(content);
+    } else {
+      currentSubtopic.expectedStandards.push(content);
     }
+  }
+
+  // ===== OBC syllabus handling =====
+  if (curriculum === 'obc') {
+    if (lower.startsWith('appreciat') || lower.startsWith('value')) {
+      currentSubtopic.values.push(content);
+    } else if (
+      lower.startsWith('measure') ||
+      lower.startsWith('calculate') ||
+      lower.startsWith('demonstrate')
+    ) {
+      currentSubtopic.skills.push(content);
+    } else {
+      currentSubtopic.knowledge.push(content);
+    }
+  }
+}
   }
 
   if (!topics.length) return null;
