@@ -6,9 +6,22 @@ const cors = require('cors');
 const multer = require('multer');
 const mammoth = require('mammoth');
 
+/* ================================
+   🔹 ADD: Claude SDK import
+================================ */
+const Anthropic = require('@anthropic-ai/sdk');
+
 const Syllabus = require('./models/Syllabus');
 
 const app = express();
+
+/* ================================
+   🔹 ADD: Initialise Claude client
+   (uses Railway variable)
+================================ */
+const anthropic = new Anthropic({
+  apiKey: process.env.CLAUDE_API_KEY
+});
 
 /* -----------------------------
    CORS CONFIG (STACKBLITZ + LOCAL)
@@ -25,7 +38,7 @@ app.use(cors({
 app.use(express.json());
 
 /* -----------------------------
-   DATABASE CONNECTION (FIXED)
+   DATABASE CONNECTION
 ------------------------------ */
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
@@ -60,7 +73,6 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
     .replace(/\n{2,}/g, '\n')
     .replace(/[•]/g, '•');
 
-  // Force new lines before numbering
   text = text.replace(/((10|11|12)\.\d+(\.\d+){0,2})/g, '\n$1');
 
   const lines = text
@@ -83,12 +95,10 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
 
   for (const line of lines) {
 
-    // Skip table headers
     if (/^topic$|^sub\s*topic$|^specific outcomes?$|^content$/i.test(line)) {
       continue;
     }
 
-    // Handle split numbering
     if (numberOnly(line)) {
       pendingNumber = line;
       continue;
@@ -106,18 +116,13 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
     const level = parsed.number.split('.').length;
     const fullText = `${parsed.number} ${parsed.text}`.trim();
 
-    // ---------------- TOPIC ----------------
     if (level === 2) {
-      currentTopic = {
-        name: fullText,
-        subtopics: []
-      };
+      currentTopic = { name: fullText, subtopics: [] };
       topics.push(currentTopic);
       currentSubtopic = null;
       continue;
     }
 
-    // ---------------- SUBTOPIC ----------------
     if (level === 3 && currentTopic) {
       currentSubtopic = {
         name: fullText,
@@ -134,13 +139,11 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
       continue;
     }
 
-    // ---------------- SPECIFIC OUTCOME ----------------
     if (level === 4 && currentSubtopic) {
       currentSubtopic.specificOutcomes.push(fullText);
       continue;
     }
 
-    // ---------------- CONTENT ----------------
     if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
       const content = line.replace(/^[-•]\s*/, '').trim();
       if (content.length < 3) continue;
@@ -161,10 +164,7 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
     }
   }
 
-  if (!topics.length) {
-    console.error('❌ Parsing failed: No topics detected');
-    return null;
-  }
+  if (!topics.length) return null;
 
   return {
     subject,
@@ -182,32 +182,48 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
 app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
   try {
     const { curriculum, subject } = req.body;
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
+    const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+    const parsed = parseZambianSyllabus(result.value, curriculum, subject);
 
-    const result = await mammoth.extractRawText({
-      buffer: req.file.buffer
-    });
-
-    const parsed = parseZambianSyllabus(
-      result.value,
-      curriculum,
-      subject
-    );
-
-    if (!parsed) {
-      return res.status(400).json({ error: 'Parsing failed' });
-    }
+    if (!parsed) return res.status(400).json({ error: 'Parsing failed' });
 
     const saved = await Syllabus.create(parsed);
-
     res.json({ success: true, syllabus: saved });
 
   } catch (err) {
-    console.error('❌ Upload error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---- 🔹 ADD: GENERATE DOCUMENT (CLAUDE) ---- */
+app.post('/api/generate-document', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    const response = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20240620',
+      max_tokens: 4096,
+      temperature: 0.4,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    });
+
+    const text =
+      response.content &&
+      response.content[0] &&
+      response.content[0].text;
+
+    res.json({ content: text || '' });
+
+  } catch (err) {
+    console.error('❌ Claude generation error:', err);
+    res.status(500).json({ error: 'Document generation failed' });
   }
 });
 
