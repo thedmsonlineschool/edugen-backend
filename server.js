@@ -342,35 +342,9 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
 
 /* ---- GENERATE DOCUMENT (CLAUDE) ---- */
 app.post('/api/generate-document', async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
-    }
-
-    const Anthropic = require('@anthropic-ai/sdk');
-    const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
-
-    const response = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
-      max_tokens: 4096,
-      temperature: 0.4,
-      messages: [
-        { role: 'user', content: prompt }
-      ]
-    });
-
-    const text =
-      response.content &&
-      response.content[0] &&
-      response.content[0].text;
-
-    res.json({ content: text || '' });
-
-  } catch (err) {
-    console.error('❌ Claude generation error:', err);
-    res.status(500).json({ error: 'Document generation failed' });
-  }
+  return res.status(501).json({
+    error: 'AI generation temporarily disabled for backend stabilisation'
+  });
 });
 
 /* ---- GET ALL SYLLABI ---- */
