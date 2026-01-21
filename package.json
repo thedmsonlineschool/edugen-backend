@@ -20,9 +20,18 @@
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20.x"
   },
   "keywords": [],
   "author": "",
   "license": "ISC"
 }
+```
+
+---
+
+### Step 2: Create a `.node-version` file (optional but recommended)
+
+Create a new file in your repository root called `.node-version` with this content:
+```
+20
