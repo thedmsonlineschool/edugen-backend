@@ -94,40 +94,49 @@ function splitBulletContent(html) {
   return items;
 }
 
-/* ---- Helper: Detect numbering level ---- */
-function getNumberingLevel(text) {
-  // Match patterns like 1.1, 1.1.1, 1.1.1.1
-  const match = text.match(/^(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\s/);
-  if (!match) return { level: 0, number: null };
+/* ---- Helper: Detect numbering level from text ---- */
+function getNumberingInfo(text) {
+  if (!text) return { level: 0, number: null, content: text };
+  
+  // Match patterns like 1.1, 1.1.1, 1.1.1.1 at the start
+  const match = text.match(/^(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\s*(.*)/s);
+  if (!match) return { level: 0, number: null, content: text };
   
   const number = match[1];
+  const content = match[2] || '';
   const parts = number.split('.');
   
   return {
     level: parts.length, // 2 = Topic, 3 = Subtopic, 4 = Specific Competence
-    number: number
+    number: number,
+    content: text // Keep full text including number
   };
 }
 
 /* ---- Helper: Check if text is a header row ---- */
-function isHeaderRow(text) {
-  const lower = text.toLowerCase();
+function isHeaderRow(cells) {
+  const combined = cells.join(' ').toLowerCase();
   return (
-    lower.includes('topic') && lower.includes('sub') ||
-    lower === 'topic' ||
-    lower === 'sub-topic' ||
-    lower === 'subtopic' ||
-    lower.includes('specific competence') ||
-    lower.includes('specificcompetence') ||
-    lower.includes('learning activit') ||
-    lower.includes('expected standard')
+    (combined.includes('topic') && combined.includes('sub')) ||
+    combined.includes('specific competence') ||
+    combined.includes('specificcompetence') ||
+    combined.includes('learning activit') ||
+    combined.includes('expected standard') ||
+    combined.includes('expectedstandard')
   );
 }
 
 /* ============================================================
    CBC SYLLABUS TABLE PARSER
    Parses HTML tables from mammoth.convertToHtml()
-   Uses numbering patterns: X.Y = Topic, X.Y.Z = Subtopic, X.Y.Z.W = Competence
+   
+   KEY INSIGHT: Mammoth shifts cells left when Word has merged cells.
+   So we detect content by NUMBERING PATTERN, not column position.
+   
+   Numbering:
+   - X.Y = Topic (2 parts)
+   - X.Y.Z = Subtopic (3 parts)  
+   - X.Y.Z.W = Specific Competence (4 parts)
 ============================================================ */
 function parseCBCSyllabusTable(html, subject) {
   const $ = cheerio.load(html);
@@ -141,90 +150,118 @@ function parseCBCSyllabusTable(html, subject) {
   $('table tr').each((rowIndex, row) => {
     const cells = $(row).find('td, th');
     
-    if (cells.length < 3) return;
+    if (cells.length < 2) return;
 
-    // Extract all cell contents
-    const cell0 = extractText($(cells[0]).html());
-    const cell1 = extractText($(cells[1]).html());
-    const cell2 = extractText($(cells[2]).html());
-    const cell3 = cells[3] ? extractText($(cells[3]).html()) : '';
-    const cell4 = cells[4] ? extractText($(cells[4]).html()) : '';
+    // Extract text from all cells
+    const cellTexts = [];
+    const cellHtmls = [];
+    cells.each((i, cell) => {
+      cellTexts.push(extractText($(cell).html()));
+      cellHtmls.push($(cell).html() || '');
+    });
 
     // Skip header rows
-    if (isHeaderRow(cell0) || isHeaderRow(cell1) || isHeaderRow(cell2)) {
+    if (isHeaderRow(cellTexts)) {
       return;
     }
 
-    // Log only first 10 rows for debugging (reduced logging)
-    if (rowCount < 10) {
-      console.log(`Row ${rowCount}:`, [cell0.substring(0, 30), cell1.substring(0, 30), cell2.substring(0, 30)]);
+    // Log first 15 rows for debugging
+    if (rowCount < 15) {
+      console.log(`Row ${rowCount}:`, cellTexts.map(t => t.substring(0, 40)));
     }
     rowCount++;
 
-    // Get raw HTML for bullet point extraction
-    const activitiesHtml = cells[3] ? $(cells[3]).html() : '';
-    const standardsHtml = cells[4] ? $(cells[4]).html() : '';
+    // Analyze each cell to find Topic, Subtopic, Competence by numbering
+    let foundTopic = null;
+    let foundSubtopic = null;
+    let foundCompetence = null;
+    let competenceIndex = -1;
 
-    // Check each cell for numbering patterns
-    const level0 = getNumberingLevel(cell0);
-    const level1 = getNumberingLevel(cell1);
-    const level2 = getNumberingLevel(cell2);
+    for (let i = 0; i < cellTexts.length; i++) {
+      const info = getNumberingInfo(cellTexts[i]);
+      
+      if (info.level === 2 && !foundTopic) {
+        foundTopic = cellTexts[i];
+      } else if (info.level === 3 && !foundSubtopic) {
+        foundSubtopic = cellTexts[i];
+      } else if (info.level === 4 && !foundCompetence) {
+        foundCompetence = cellTexts[i];
+        competenceIndex = i;
+      }
+    }
 
-    // TOPIC: X.Y pattern (2 parts) - usually in column 0
-    if (level0.level === 2 && cell0) {
-      const existing = topics.find(t => t.name === cell0);
+    // Process TOPIC (X.Y pattern)
+    if (foundTopic) {
+      const existing = topics.find(t => t.name === foundTopic);
       if (existing) {
         currentTopic = existing;
       } else {
-        currentTopic = { name: cell0, subtopics: [] };
+        currentTopic = { name: foundTopic, subtopics: [] };
         topics.push(currentTopic);
         currentSubtopic = null;
       }
     }
 
-    // SUBTOPIC: X.Y.Z pattern (3 parts) - usually in column 1
-    if (level1.level === 3 && cell1 && currentTopic) {
-      const existingSubtopic = currentTopic.subtopics.find(s => s.name === cell1);
+    // Process SUBTOPIC (X.Y.Z pattern)
+    if (foundSubtopic && currentTopic) {
+      const existingSubtopic = currentTopic.subtopics.find(s => s.name === foundSubtopic);
       if (existingSubtopic) {
         currentSubtopic = existingSubtopic;
       } else {
         currentSubtopic = {
-          name: cell1,
+          name: foundSubtopic,
           specificCompetences: []
         };
         currentTopic.subtopics.push(currentSubtopic);
       }
     }
 
-    // SPECIFIC COMPETENCE: X.Y.Z.W pattern (4 parts) - usually in column 2
-    if (level2.level === 4 && cell2 && currentSubtopic) {
-      const learningActivities = splitBulletContent(activitiesHtml);
-      const expectedStandards = splitBulletContent(standardsHtml);
+    // Process SPECIFIC COMPETENCE (X.Y.Z.W pattern)
+    if (foundCompetence && currentSubtopic) {
+      // Learning activities and expected standards are in cells AFTER the competence
+      let learningActivities = [];
+      let expectedStandards = [];
 
-      const specificCompetence = {
-        description: cell2,
-        learningActivities: learningActivities,
-        expectedStandards: expectedStandards
-      };
-      currentSubtopic.specificCompetences.push(specificCompetence);
-    }
+      // The cell right after competence is usually learning activities
+      if (competenceIndex + 1 < cellHtmls.length) {
+        learningActivities = splitBulletContent(cellHtmls[competenceIndex + 1]);
+      }
+      
+      // The cell after that is usually expected standards
+      if (competenceIndex + 2 < cellHtmls.length) {
+        expectedStandards = splitBulletContent(cellHtmls[competenceIndex + 2]);
+      }
 
-    // Handle rows where Topic/Subtopic cells are empty (merged cells)
-    // but there's still a specific competence
-    if (!level0.level && !level1.level && level2.level === 4 && currentSubtopic) {
-      const learningActivities = splitBulletContent(activitiesHtml);
-      const expectedStandards = splitBulletContent(standardsHtml);
+      // Check if this competence already exists (avoid duplicates)
+      const existingCompetence = currentSubtopic.specificCompetences.find(
+        c => c.description === foundCompetence
+      );
 
-      const specificCompetence = {
-        description: cell2,
-        learningActivities: learningActivities,
-        expectedStandards: expectedStandards
-      };
-      currentSubtopic.specificCompetences.push(specificCompetence);
+      if (!existingCompetence) {
+        const specificCompetence = {
+          description: foundCompetence,
+          learningActivities: learningActivities,
+          expectedStandards: expectedStandards
+        };
+        currentSubtopic.specificCompetences.push(specificCompetence);
+      }
     }
   });
 
-  console.log(`✅ CBC Parsing complete: ${topics.length} topics found`);
+  // Log summary
+  let totalSubtopics = 0;
+  let totalCompetences = 0;
+  topics.forEach(t => {
+    totalSubtopics += t.subtopics.length;
+    t.subtopics.forEach(s => {
+      totalCompetences += s.specificCompetences.length;
+    });
+  });
+  
+  console.log(`✅ CBC Parsing complete:`);
+  console.log(`   - Topics: ${topics.length}`);
+  console.log(`   - Subtopics: ${totalSubtopics}`);
+  console.log(`   - Specific Competences: ${totalCompetences}`);
 
   if (!topics.length) return null;
 
