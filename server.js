@@ -123,8 +123,13 @@ function parseCBCSyllabusTable(html, subject) {
   $('table tr').each((rowIndex, row) => {
     const cells = $(row).find('td, th');
     
-    // Skip header rows (typically first row) or rows with insufficient cells
-    if (rowIndex === 0 || cells.length < 3) return;
+    // FIX 1: Do NOT skip rows using rowIndex === 0
+    if (cells.length < 2) return;
+
+    // FIX 4: Add TEMPORARY debug logging
+    console.log(
+      cells.map((i, c) => extractText($(c).html())).get()
+    );
 
     // Check if this is a header row by content
     const firstCellText = extractText($(cells[0]).html()).toLowerCase();
@@ -149,13 +154,22 @@ function parseCBCSyllabusTable(html, subject) {
 
     // Parse topic (inherit from previous if empty)
     const topicText = extractText(topicCell).trim();
+    
+    // FIX 2: Make topic inheritance bullet-proof (no duplicates)
     if (topicText) {
-      currentTopic = { name: topicText, subtopics: [] };
-      topics.push(currentTopic);
+      const existing = topics.find(t => t.name === topicText);
+      if (existing) {
+        currentTopic = existing;
+      } else {
+        currentTopic = { name: topicText, subtopics: [] };
+        topics.push(currentTopic);
+      }
     }
 
-    // Skip row if no topic context exists
-    if (!currentTopic) return;
+    // FIX 3: Allow subtopics even when topic cell is empty
+    if (!currentTopic && !topicText) {
+      return;
+    }
 
     // Parse subtopic
     const subtopicText = extractText(subtopicCell).trim();
