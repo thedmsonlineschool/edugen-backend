@@ -105,15 +105,15 @@ function parseCBCSyllabusTable(html, subject) {
 
   const topics = [];
   let currentTopic = null;
+  let currentSubtopic = null;
 
   // Process each table row
   $('table tr').each((rowIndex, row) => {
     const cells = $(row).find('td, th');
     
-    // FIX 1: Do NOT skip rows using rowIndex === 0
     if (cells.length < 2) return;
 
-    // FIX 4: Add TEMPORARY debug logging
+    // Debug logging
     console.log(
       cells.map((i, c) => extractText($(c).html())).get()
     );
@@ -139,10 +139,10 @@ function parseCBCSyllabusTable(html, subject) {
     const activitiesCell = cells[3] ? $(cells[3]).html() || '' : '';
     const standardsCell = cells[4] ? $(cells[4]).html() || '' : '';
 
-    // Parse topic (inherit from previous if empty)
+    // Parse topic text
     const topicText = extractText(topicCell).trim();
     
-    // FIX 2: Make topic inheritance bullet-proof (no duplicates)
+    // Topic handling: create or reuse
     if (topicText) {
       const existing = topics.find(t => t.name === topicText);
       if (existing) {
@@ -150,27 +150,63 @@ function parseCBCSyllabusTable(html, subject) {
       } else {
         currentTopic = { name: topicText, subtopics: [] };
         topics.push(currentTopic);
+        currentSubtopic = null; // Reset subtopic when new topic starts
       }
     }
 
-    // FIX 3: Allow subtopics even when topic cell is empty
-    if (!currentTopic && !topicText) {
+    // Skip row if no topic context exists
+    if (!currentTopic) {
       return;
     }
 
-    // Parse subtopic
+    // Parse subtopic text
     const subtopicText = extractText(subtopicCell).trim();
-    if (!subtopicText) return;
+    
+    // Subtopic handling: create or reuse
+    if (subtopicText) {
+      const existingSubtopic = currentTopic.subtopics.find(s => s.name === subtopicText);
+      if (existingSubtopic) {
+        currentSubtopic = existingSubtopic;
+      } else {
+        currentSubtopic = {
+          name: subtopicText,
+          specificCompetences: []
+        };
+        currentTopic.subtopics.push(currentSubtopic);
+      }
+    }
 
-    // Create subtopic entry with CBC fields
-    const subtopic = {
-      name: subtopicText,
-      specificCompetences: splitBulletContent(competencesCell),
-      learningActivities: splitBulletContent(activitiesCell),
-      expectedStandards: splitBulletContent(standardsCell)
-    };
+    // Skip row if no subtopic context exists
+    if (!currentSubtopic) {
+      return;
+    }
 
-    currentTopic.subtopics.push(subtopic);
+    // Parse specific competences from the competences cell
+    const competenceDescriptions = splitBulletContent(competencesCell);
+    const learningActivities = splitBulletContent(activitiesCell);
+    const expectedStandards = splitBulletContent(standardsCell);
+
+    // Create one specific competence object per description
+    if (competenceDescriptions.length > 0) {
+      competenceDescriptions.forEach((description, index) => {
+        const specificCompetence = {
+          description: description,
+          learningActivities: index === 0 ? learningActivities : [],
+          expectedStandards: index === 0 ? expectedStandards : []
+        };
+        currentSubtopic.specificCompetences.push(specificCompetence);
+      });
+    } else {
+      // If no competence descriptions but has activities/standards, create a placeholder
+      if (learningActivities.length > 0 || expectedStandards.length > 0) {
+        const specificCompetence = {
+          description: '',
+          learningActivities: learningActivities,
+          expectedStandards: expectedStandards
+        };
+        currentSubtopic.specificCompetences.push(specificCompetence);
+      }
+    }
   });
 
   // Return null if no topics were parsed
