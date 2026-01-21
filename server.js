@@ -127,7 +127,7 @@ if (level === 3 && currentTopic) {
     name: fullText,
 
     // ===== CBC syllabus fields =====
-    competencies: [],
+    specificCompetences: [],
     learningActivities: [],
     expectedStandards: [],
 
@@ -135,10 +135,7 @@ if (level === 3 && currentTopic) {
     specificOutcomes: [],
     knowledge: [],
     skills: [],
-    values: [],
-
-    // ===== Generated later by AI (NOT syllabus) =====
-    scopeOfLessons: []
+    values: []
   };
 
   currentTopic.subtopics.push(currentSubtopic);
@@ -158,11 +155,28 @@ if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
   // ===== CBC syllabus handling =====
   if (curriculum === 'cbc') {
     if (
+      lower.includes('explain') ||
+      lower.includes('describe') ||
+      lower.includes('define') ||
+      lower.includes('identify') ||
+      lower.includes('state') ||
+      lower.includes('outline') ||
+      lower.includes('analyse') ||
+      lower.includes('analyze') ||
+      lower.includes('evaluate') ||
+      lower.includes('apply') ||
+      lower.startsWith('demonstrate ability')
+    ) {
+      currentSubtopic.specificCompetences.push(content);
+    } else if (
       lower.includes('demonstrat') ||
       lower.includes('discuss') ||
       lower.includes('investigat') ||
       lower.includes('perform') ||
-      lower.includes('observe')
+      lower.includes('observe') ||
+      lower.includes('experiment') ||
+      lower.includes('group work') ||
+      lower.includes('practical')
     ) {
       currentSubtopic.learningActivities.push(content);
     } else {
