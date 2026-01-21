@@ -436,6 +436,17 @@ app.post('/api/debug/parse-cbc', upload.single('file'), async (req, res) => {
 });
 
 /* -----------------------------
+   GLOBAL ERROR HANDLERS
+------------------------------ */
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+/* -----------------------------
    START SERVER
 ------------------------------ */
 const PORT = process.env.PORT || 5000;
