@@ -1,11 +1,16 @@
 const mongoose = require('mongoose');
+
+const SpecificCompetenceSchema = new mongoose.Schema({
+  description: { type: String, required: true },
+  learningActivities: { type: [String], default: [] },
+  expectedStandards: { type: [String], default: [] }
+});
+
 const SubtopicSchema = new mongoose.Schema({
   name: { type: String, required: true },
   
   // --- CBC FIELDS ---
-  specificCompetences: { type: [String], default: [] },      // "Specific Competences"
-  learningActivities: { type: [String], default: [] },        // "Learning Activities"
-  expectedStandards: { type: [String], default: [] }, // "Expected Standards"
+  specificCompetences: { type: [SpecificCompetenceSchema], default: [] },
   
   // --- OBC FIELDS ---
   specificOutcomes: { type: [String], default: [] },  // "Specific Outcomes"
@@ -13,10 +18,12 @@ const SubtopicSchema = new mongoose.Schema({
   skills: { type: [String], default: [] },            // Content -> Skills
   values: { type: [String], default: [] }             // Content -> Values
 });
+
 const TopicSchema = new mongoose.Schema({
   name: { type: String, required: true },
   subtopics: [SubtopicSchema]
 });
+
 const SyllabusSchema = new mongoose.Schema({
   subject: { type: String, required: true },
   curriculumType: { 
@@ -29,4 +36,5 @@ const SyllabusSchema = new mongoose.Schema({
 }, { 
   timestamps: true // ✅ AUTOMATICALLY manages createdAt and updatedAt
 });
+
 module.exports = mongoose.model('Syllabus', SyllabusSchema);
