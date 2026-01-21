@@ -99,6 +99,7 @@ function splitBulletContent(html) {
 /* ============================================================
    CBC SYLLABUS TABLE PARSER
    Parses HTML tables from mammoth.convertToHtml()
+   Option A: Each row = ONE specific competence
 ============================================================ */
 function parseCBCSyllabusTable(html, subject) {
   const $ = cheerio.load(html);
@@ -181,31 +182,20 @@ function parseCBCSyllabusTable(html, subject) {
       return;
     }
 
-    // Parse specific competences from the competences cell
-    const competenceDescriptions = splitBulletContent(competencesCell);
+    // Option A: Each row = ONE specific competence
+    // Treat entire competences cell as one description
+    const competenceDescription = extractText(competencesCell).trim();
     const learningActivities = splitBulletContent(activitiesCell);
     const expectedStandards = splitBulletContent(standardsCell);
 
-    // Create one specific competence object per description
-    if (competenceDescriptions.length > 0) {
-      competenceDescriptions.forEach((description, index) => {
-        const specificCompetence = {
-          description: description,
-          learningActivities: index === 0 ? learningActivities : [],
-          expectedStandards: index === 0 ? expectedStandards : []
-        };
-        currentSubtopic.specificCompetences.push(specificCompetence);
-      });
-    } else {
-      // If no competence descriptions but has activities/standards, create a placeholder
-      if (learningActivities.length > 0 || expectedStandards.length > 0) {
-        const specificCompetence = {
-          description: '',
-          learningActivities: learningActivities,
-          expectedStandards: expectedStandards
-        };
-        currentSubtopic.specificCompetences.push(specificCompetence);
-      }
+    // Only create a specific competence if there's a description
+    if (competenceDescription) {
+      const specificCompetence = {
+        description: competenceDescription,
+        learningActivities: learningActivities,
+        expectedStandards: expectedStandards
+      };
+      currentSubtopic.specificCompetences.push(specificCompetence);
     }
   });
 
