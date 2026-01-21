@@ -7,22 +7,9 @@ const multer = require('multer');
 const mammoth = require('mammoth');
 const cheerio = require('cheerio');
 
-/* ================================
-   🔹 Claude SDK import
-================================ */
-const Anthropic = require('@anthropic-ai/sdk');
-
 const Syllabus = require('./models/Syllabus');
 
 const app = express();
-
-/* ================================
-   🔹 Initialise Claude client
-   (uses Railway variable)
-================================ */
-const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY
-});
 
 /* -----------------------------
    CORS CONFIG (STACKBLITZ + LOCAL)
@@ -360,6 +347,9 @@ app.post('/api/generate-document', async (req, res) => {
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
     }
+
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
     const response = await anthropic.messages.create({
       model: 'claude-3-haiku-20240307',
