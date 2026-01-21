@@ -5,9 +5,10 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
 const mammoth = require('mammoth');
+const cheerio = require('cheerio');
 
 /* ================================
-   🔹 ADD: Claude SDK import
+   🔹 Claude SDK import
 ================================ */
 const Anthropic = require('@anthropic-ai/sdk');
 
@@ -16,7 +17,7 @@ const Syllabus = require('./models/Syllabus');
 const app = express();
 
 /* ================================
-   🔹 ADD: Initialise Claude client
+   🔹 Initialise Claude client
    (uses Railway variable)
 ================================ */
 const anthropic = new Anthropic({
@@ -64,14 +65,133 @@ const upload = multer({
 });
 
 /* ============================================================
-   ZAMBIAN SYLLABUS PARSER
+   HELPER FUNCTIONS FOR CBC TABLE PARSING
 ============================================================ */
-function parseZambianSyllabus(rawText, curriculum, subject) {
+
+/* ---- Helper: Extract plain text from HTML ---- */
+function extractText(html) {
+  if (!html) return '';
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+/* ---- Helper: Split bullets/line breaks into array ---- */
+function splitBulletContent(html) {
+  if (!html) return [];
+
+  // Normalize separators
+  let text = html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li>/gi, '\n•')
+    .replace(/<\/li>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+
+  // Split by bullets, dashes, or newlines
+  const items = text
+    .split(/\n|(?=[•\-▪◦])/)
+    .map(item => item.replace(/^[•\-▪◦]\s*/, '').trim())
+    .filter(item => item.length > 2);
+
+  return items;
+}
+
+/* ============================================================
+   CBC SYLLABUS TABLE PARSER
+   Parses HTML tables from mammoth.convertToHtml()
+============================================================ */
+function parseCBCSyllabusTable(html, subject) {
+  const $ = cheerio.load(html);
+
+  const topics = [];
+  let currentTopic = null;
+
+  // Process each table row
+  $('table tr').each((rowIndex, row) => {
+    const cells = $(row).find('td, th');
+    
+    // Skip header rows (typically first row) or rows with insufficient cells
+    if (rowIndex === 0 || cells.length < 3) return;
+
+    // Check if this is a header row by content
+    const firstCellText = extractText($(cells[0]).html()).toLowerCase();
+    if (
+      firstCellText.includes('topic') ||
+      firstCellText.includes('sub-topic') ||
+      firstCellText.includes('subtopic') ||
+      firstCellText.includes('specific competence') ||
+      firstCellText.includes('learning activit') ||
+      firstCellText.includes('expected standard')
+    ) {
+      return; // Skip header rows
+    }
+
+    // Extract cell contents based on column position
+    // Columns: Topic | Subtopic | Specific Competences | Learning Activities | Expected Standards
+    const topicCell = $(cells[0]).html() || '';
+    const subtopicCell = $(cells[1]).html() || '';
+    const competencesCell = $(cells[2]).html() || '';
+    const activitiesCell = cells[3] ? $(cells[3]).html() || '' : '';
+    const standardsCell = cells[4] ? $(cells[4]).html() || '' : '';
+
+    // Parse topic (inherit from previous if empty)
+    const topicText = extractText(topicCell).trim();
+    if (topicText) {
+      currentTopic = { name: topicText, subtopics: [] };
+      topics.push(currentTopic);
+    }
+
+    // Skip row if no topic context exists
+    if (!currentTopic) return;
+
+    // Parse subtopic
+    const subtopicText = extractText(subtopicCell).trim();
+    if (!subtopicText) return;
+
+    // Create subtopic entry with CBC fields
+    const subtopic = {
+      name: subtopicText,
+      specificCompetences: splitBulletContent(competencesCell),
+      learningActivities: splitBulletContent(activitiesCell),
+      expectedStandards: splitBulletContent(standardsCell)
+    };
+
+    currentTopic.subtopics.push(subtopic);
+  });
+
+  // Return null if no topics were parsed
+  if (!topics.length) return null;
+
+  return {
+    subject,
+    curriculumType: 'cbc',
+    form: 'Form 1',
+    topics
+  };
+}
+
+/* ============================================================
+   OBC ZAMBIAN SYLLABUS PARSER (TEXT-BASED)
+============================================================ */
+function parseOBCSyllabus(rawText, subject) {
 
   let text = rawText
     .replace(/\r/g, '\n')
     .replace(/\n{2,}/g, '\n')
-    .replace(/[•]/g, '•');
+    .replace(/[•]/g, '•');
 
   text = text.replace(/((10|11|12)\.\d+(\.\d+){0,2})/g, '\n$1');
 
@@ -122,91 +242,53 @@ function parseZambianSyllabus(rawText, curriculum, subject) {
       currentSubtopic = null;
       continue;
     }
-if (level === 3 && currentTopic) {
-  currentSubtopic = {
-    name: fullText,
 
-    // ===== CBC syllabus fields =====
-    specificCompetences: [],
-    learningActivities: [],
-    expectedStandards: [],
+    if (level === 3 && currentTopic) {
+      currentSubtopic = {
+        name: fullText,
+        // OBC syllabus fields
+        specificOutcomes: [],
+        knowledge: [],
+        skills: [],
+        values: []
+      };
 
-    // ===== OBC syllabus fields =====
-    specificOutcomes: [],
-    knowledge: [],
-    skills: [],
-    values: []
-  };
-
-  currentTopic.subtopics.push(currentSubtopic);
-  continue;
-}
+      currentTopic.subtopics.push(currentSubtopic);
+      continue;
+    }
 
     if (level === 4 && currentSubtopic) {
       currentSubtopic.specificOutcomes.push(fullText);
       continue;
     }
-if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
-  const content = line.replace(/^[-•]\s*/, '').trim();
-  if (content.length < 3) continue;
 
-  const lower = content.toLowerCase();
+    if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
+      const content = line.replace(/^[-•]\s*/, '').trim();
+      if (content.length < 3) continue;
 
-  // ===== CBC syllabus handling =====
-  if (curriculum === 'cbc') {
-    if (
-      lower.includes('explain') ||
-      lower.includes('describe') ||
-      lower.includes('define') ||
-      lower.includes('identify') ||
-      lower.includes('state') ||
-      lower.includes('outline') ||
-      lower.includes('analyse') ||
-      lower.includes('analyze') ||
-      lower.includes('evaluate') ||
-      lower.includes('apply') ||
-      lower.startsWith('demonstrate ability')
-    ) {
-      currentSubtopic.specificCompetences.push(content);
-    } else if (
-      lower.includes('demonstrat') ||
-      lower.includes('discuss') ||
-      lower.includes('investigat') ||
-      lower.includes('perform') ||
-      lower.includes('observe') ||
-      lower.includes('experiment') ||
-      lower.includes('group work') ||
-      lower.includes('practical')
-    ) {
-      currentSubtopic.learningActivities.push(content);
-    } else {
-      currentSubtopic.expectedStandards.push(content);
+      const lower = content.toLowerCase();
+
+      // OBC syllabus handling
+      if (lower.startsWith('appreciat') || lower.startsWith('value')) {
+        currentSubtopic.values.push(content);
+      } else if (
+        lower.startsWith('measure') ||
+        lower.startsWith('calculate') ||
+        lower.startsWith('demonstrate')
+      ) {
+        currentSubtopic.skills.push(content);
+      } else {
+        currentSubtopic.knowledge.push(content);
+      }
     }
-  }
-
-  // ===== OBC syllabus handling =====
-  if (curriculum === 'obc') {
-    if (lower.startsWith('appreciat') || lower.startsWith('value')) {
-      currentSubtopic.values.push(content);
-    } else if (
-      lower.startsWith('measure') ||
-      lower.startsWith('calculate') ||
-      lower.startsWith('demonstrate')
-    ) {
-      currentSubtopic.skills.push(content);
-    } else {
-      currentSubtopic.knowledge.push(content);
-    }
-  }
-}
   }
 
   if (!topics.length) return null;
 
   return {
     subject,
-    curriculumType: curriculum,
-    form: curriculum === 'cbc' ? 'Form 1' : 'Grade 10',
+    curriculumType: 'obc',
+    form: 'Grade 10',
     topics
   };
 }
@@ -221,44 +303,43 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     const { curriculum, subject } = req.body;
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-let parsed;
+    let parsed;
 
-if (curriculum === 'cbc') {
-  // CBC syllabi are TABLE-BASED → preserve structure
-  const result = await mammoth.convertToHtml({
-    buffer: req.file.buffer
-  });
+    if (curriculum === 'cbc') {
+      // CBC syllabi are TABLE-BASED → use HTML table parser
+      const result = await mammoth.convertToHtml({
+        buffer: req.file.buffer
+      });
 
-  parsed = parseZambianSyllabus(
-    result.value,   // HTML with <table><tr><td>
-    curriculum,
-    subject
-  );
+      console.log('📄 CBC HTML preview:', result.value.substring(0, 500));
 
-} else {
-  // OBC syllabi are TEXT-BASED
-  const result = await mammoth.extractRawText({
-    buffer: req.file.buffer
-  });
+      parsed = parseCBCSyllabusTable(result.value, subject);
 
-  parsed = parseZambianSyllabus(
-    result.value,
-    curriculum,
-    subject
-  );
-}
+    } else {
+      // OBC syllabi are TEXT-BASED
+      const result = await mammoth.extractRawText({
+        buffer: req.file.buffer
+      });
 
-    if (!parsed) return res.status(400).json({ error: 'Parsing failed' });
+      parsed = parseOBCSyllabus(result.value, subject);
+    }
+
+    if (!parsed) {
+      return res.status(400).json({ 
+        error: 'Parsing failed. Could not extract syllabus structure from the document.' 
+      });
+    }
 
     const saved = await Syllabus.create(parsed);
     res.json({ success: true, syllabus: saved });
 
   } catch (err) {
+    console.error('❌ Syllabus parsing error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ---- 🔹 ADD: GENERATE DOCUMENT (CLAUDE) ---- */
+/* ---- GENERATE DOCUMENT (CLAUDE) ---- */
 app.post('/api/generate-document', async (req, res) => {
   try {
     const { prompt } = req.body;
@@ -290,25 +371,64 @@ app.post('/api/generate-document', async (req, res) => {
 
 /* ---- GET ALL SYLLABI ---- */
 app.get('/api/syllabi', async (req, res) => {
-  const syllabi = await Syllabus.find().sort({ createdAt: -1 });
-  res.json(syllabi);
+  try {
+    const syllabi = await Syllabus.find().sort({ createdAt: -1 });
+    res.json(syllabi);
+  } catch (err) {
+    console.error('❌ Error fetching syllabi:', err);
+    res.status(500).json({ error: 'Failed to fetch syllabi' });
+  }
 });
 
 /* ---- GET SINGLE SYLLABUS ---- */
 app.get('/api/syllabi/:id', async (req, res) => {
-  const syllabus = await Syllabus.findById(req.params.id);
-  res.json(syllabus);
+  try {
+    const syllabus = await Syllabus.findById(req.params.id);
+    if (!syllabus) {
+      return res.status(404).json({ error: 'Syllabus not found' });
+    }
+    res.json(syllabus);
+  } catch (err) {
+    console.error('❌ Error fetching syllabus:', err);
+    res.status(500).json({ error: 'Failed to fetch syllabus' });
+  }
 });
 
 /* ---- DELETE SYLLABUS ---- */
 app.delete('/api/syllabi/:id', async (req, res) => {
-  await Syllabus.findByIdAndDelete(req.params.id);
-  res.json({ success: true });
+  try {
+    await Syllabus.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting syllabus:', err);
+    res.status(500).json({ error: 'Failed to delete syllabus' });
+  }
 });
 
 /* ---- HEALTH CHECK ---- */
 app.get('/ping', (req, res) => {
   res.json({ message: 'EduGen backend is alive' });
+});
+
+/* ---- DEBUG: Test CBC Parser (for development) ---- */
+app.post('/api/debug/parse-cbc', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const result = await mammoth.convertToHtml({
+      buffer: req.file.buffer
+    });
+
+    const parsed = parseCBCSyllabusTable(result.value, 'Debug Subject');
+
+    res.json({
+      rawHtml: result.value,
+      parsed: parsed
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* -----------------------------
