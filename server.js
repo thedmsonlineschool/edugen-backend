@@ -74,7 +74,6 @@ function extractText(html) {
 function splitBulletContent(html) {
   if (!html) return [];
 
-  // Normalize separators
   let text = html
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<li>/gi, '\n•')
@@ -87,7 +86,6 @@ function splitBulletContent(html) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
 
-  // Split by bullets, dashes, or newlines
   const items = text
     .split(/\n|(?=[•\-▪◦])/)
     .map(item => item.replace(/^[•\-▪◦]\s*/, '').trim())
@@ -96,10 +94,40 @@ function splitBulletContent(html) {
   return items;
 }
 
+/* ---- Helper: Detect numbering level ---- */
+function getNumberingLevel(text) {
+  // Match patterns like 1.1, 1.1.1, 1.1.1.1
+  const match = text.match(/^(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\s/);
+  if (!match) return { level: 0, number: null };
+  
+  const number = match[1];
+  const parts = number.split('.');
+  
+  return {
+    level: parts.length, // 2 = Topic, 3 = Subtopic, 4 = Specific Competence
+    number: number
+  };
+}
+
+/* ---- Helper: Check if text is a header row ---- */
+function isHeaderRow(text) {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes('topic') && lower.includes('sub') ||
+    lower === 'topic' ||
+    lower === 'sub-topic' ||
+    lower === 'subtopic' ||
+    lower.includes('specific competence') ||
+    lower.includes('specificcompetence') ||
+    lower.includes('learning activit') ||
+    lower.includes('expected standard')
+  );
+}
+
 /* ============================================================
    CBC SYLLABUS TABLE PARSER
    Parses HTML tables from mammoth.convertToHtml()
-   Option A: Each row = ONE specific competence
+   Uses numbering patterns: X.Y = Topic, X.Y.Z = Subtopic, X.Y.Z.W = Competence
 ============================================================ */
 function parseCBCSyllabusTable(html, subject) {
   const $ = cheerio.load(html);
@@ -107,91 +135,88 @@ function parseCBCSyllabusTable(html, subject) {
   const topics = [];
   let currentTopic = null;
   let currentSubtopic = null;
+  let rowCount = 0;
 
   // Process each table row
   $('table tr').each((rowIndex, row) => {
     const cells = $(row).find('td, th');
     
-    if (cells.length < 2) return;
+    if (cells.length < 3) return;
 
-    // Debug logging
-    console.log(
-      cells.map((i, c) => extractText($(c).html())).get()
-    );
+    // Extract all cell contents
+    const cell0 = extractText($(cells[0]).html());
+    const cell1 = extractText($(cells[1]).html());
+    const cell2 = extractText($(cells[2]).html());
+    const cell3 = cells[3] ? extractText($(cells[3]).html()) : '';
+    const cell4 = cells[4] ? extractText($(cells[4]).html()) : '';
 
-    // Check if this is a header row by content
-    const firstCellText = extractText($(cells[0]).html()).toLowerCase();
-    if (
-      firstCellText.includes('topic') ||
-      firstCellText.includes('sub-topic') ||
-      firstCellText.includes('subtopic') ||
-      firstCellText.includes('specific competence') ||
-      firstCellText.includes('learning activit') ||
-      firstCellText.includes('expected standard')
-    ) {
-      return; // Skip header rows
-    }
-
-    // Extract cell contents based on column position
-    // Columns: Topic | Subtopic | Specific Competences | Learning Activities | Expected Standards
-    const topicCell = $(cells[0]).html() || '';
-    const subtopicCell = $(cells[1]).html() || '';
-    const competencesCell = $(cells[2]).html() || '';
-    const activitiesCell = cells[3] ? $(cells[3]).html() || '' : '';
-    const standardsCell = cells[4] ? $(cells[4]).html() || '' : '';
-
-    // Parse topic text
-    const topicText = extractText(topicCell).trim();
-    
-    // Topic handling: create or reuse
-    if (topicText) {
-      const existing = topics.find(t => t.name === topicText);
-      if (existing) {
-        currentTopic = existing;
-      } else {
-        currentTopic = { name: topicText, subtopics: [] };
-        topics.push(currentTopic);
-        currentSubtopic = null; // Reset subtopic when new topic starts
-      }
-    }
-
-    // Skip row if no topic context exists
-    if (!currentTopic) {
+    // Skip header rows
+    if (isHeaderRow(cell0) || isHeaderRow(cell1) || isHeaderRow(cell2)) {
       return;
     }
 
-    // Parse subtopic text
-    const subtopicText = extractText(subtopicCell).trim();
-    
-    // Subtopic handling: create or reuse
-    if (subtopicText) {
-      const existingSubtopic = currentTopic.subtopics.find(s => s.name === subtopicText);
+    // Log only first 10 rows for debugging (reduced logging)
+    if (rowCount < 10) {
+      console.log(`Row ${rowCount}:`, [cell0.substring(0, 30), cell1.substring(0, 30), cell2.substring(0, 30)]);
+    }
+    rowCount++;
+
+    // Get raw HTML for bullet point extraction
+    const activitiesHtml = cells[3] ? $(cells[3]).html() : '';
+    const standardsHtml = cells[4] ? $(cells[4]).html() : '';
+
+    // Check each cell for numbering patterns
+    const level0 = getNumberingLevel(cell0);
+    const level1 = getNumberingLevel(cell1);
+    const level2 = getNumberingLevel(cell2);
+
+    // TOPIC: X.Y pattern (2 parts) - usually in column 0
+    if (level0.level === 2 && cell0) {
+      const existing = topics.find(t => t.name === cell0);
+      if (existing) {
+        currentTopic = existing;
+      } else {
+        currentTopic = { name: cell0, subtopics: [] };
+        topics.push(currentTopic);
+        currentSubtopic = null;
+      }
+    }
+
+    // SUBTOPIC: X.Y.Z pattern (3 parts) - usually in column 1
+    if (level1.level === 3 && cell1 && currentTopic) {
+      const existingSubtopic = currentTopic.subtopics.find(s => s.name === cell1);
       if (existingSubtopic) {
         currentSubtopic = existingSubtopic;
       } else {
         currentSubtopic = {
-          name: subtopicText,
+          name: cell1,
           specificCompetences: []
         };
         currentTopic.subtopics.push(currentSubtopic);
       }
     }
 
-    // Skip row if no subtopic context exists
-    if (!currentSubtopic) {
-      return;
+    // SPECIFIC COMPETENCE: X.Y.Z.W pattern (4 parts) - usually in column 2
+    if (level2.level === 4 && cell2 && currentSubtopic) {
+      const learningActivities = splitBulletContent(activitiesHtml);
+      const expectedStandards = splitBulletContent(standardsHtml);
+
+      const specificCompetence = {
+        description: cell2,
+        learningActivities: learningActivities,
+        expectedStandards: expectedStandards
+      };
+      currentSubtopic.specificCompetences.push(specificCompetence);
     }
 
-    // Option A: Each row = ONE specific competence
-    // Treat entire competences cell as one description
-    const competenceDescription = extractText(competencesCell).trim();
-    const learningActivities = splitBulletContent(activitiesCell);
-    const expectedStandards = splitBulletContent(standardsCell);
+    // Handle rows where Topic/Subtopic cells are empty (merged cells)
+    // but there's still a specific competence
+    if (!level0.level && !level1.level && level2.level === 4 && currentSubtopic) {
+      const learningActivities = splitBulletContent(activitiesHtml);
+      const expectedStandards = splitBulletContent(standardsHtml);
 
-    // Only create a specific competence if there's a description
-    if (competenceDescription) {
       const specificCompetence = {
-        description: competenceDescription,
+        description: cell2,
         learningActivities: learningActivities,
         expectedStandards: expectedStandards
       };
@@ -199,7 +224,8 @@ function parseCBCSyllabusTable(html, subject) {
     }
   });
 
-  // Return null if no topics were parsed
+  console.log(`✅ CBC Parsing complete: ${topics.length} topics found`);
+
   if (!topics.length) return null;
 
   return {
@@ -273,7 +299,6 @@ function parseOBCSyllabus(rawText, subject) {
     if (level === 3 && currentTopic) {
       currentSubtopic = {
         name: fullText,
-        // OBC syllabus fields
         specificOutcomes: [],
         knowledge: [],
         skills: [],
@@ -295,7 +320,6 @@ function parseOBCSyllabus(rawText, subject) {
 
       const lower = content.toLowerCase();
 
-      // OBC syllabus handling
       if (lower.startsWith('appreciat') || lower.startsWith('value')) {
         currentSubtopic.values.push(content);
       } else if (
@@ -333,17 +357,15 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     let parsed;
 
     if (curriculum === 'cbc') {
-      // CBC syllabi are TABLE-BASED → use HTML table parser
       const result = await mammoth.convertToHtml({
         buffer: req.file.buffer
       });
 
-      console.log('📄 CBC HTML preview:', result.value.substring(0, 500));
+      console.log('📄 CBC HTML length:', result.value.length);
 
       parsed = parseCBCSyllabusTable(result.value, subject);
 
     } else {
-      // OBC syllabi are TEXT-BASED
       const result = await mammoth.extractRawText({
         buffer: req.file.buffer
       });
@@ -426,7 +448,7 @@ app.post('/api/debug/parse-cbc', upload.single('file'), async (req, res) => {
     const parsed = parseCBCSyllabusTable(result.value, 'Debug Subject');
 
     res.json({
-      rawHtml: result.value,
+      rawHtmlLength: result.value.length,
       parsed: parsed
     });
 
