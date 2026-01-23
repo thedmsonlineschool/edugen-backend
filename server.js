@@ -425,11 +425,58 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
   }
 });
 
-/* ---- GENERATE DOCUMENT (CLAUDE) ---- */
+/* ---- GENERATE DOCUMENT (CLAUDE API) ---- */
 app.post('/api/generate-document', async (req, res) => {
-  return res.status(501).json({
-    error: 'AI generation temporarily disabled for backend stabilisation'
-  });
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    // Check if API key is configured
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.error('❌ ANTHROPIC_API_KEY not configured');
+      return res.status(500).json({ error: 'AI service not configured. Please set ANTHROPIC_API_KEY.' });
+    }
+
+    console.log('🤖 Generating document with Claude...');
+    console.log('📝 Prompt length:', prompt.length);
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4096,
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('❌ Claude API error:', data);
+      return res.status(500).json({ 
+        error: data.error?.message || 'AI generation failed' 
+      });
+    }
+
+    const content = data.content[0]?.text || '';
+    console.log('✅ Document generated successfully, length:', content.length);
+    
+    res.json({ content });
+
+  } catch (err) {
+    console.error('❌ Document generation error:', err);
+    res.status(500).json({ error: 'Failed to generate document. Please try again.' });
+  }
 });
 
 /* ---- GET ALL SYLLABI ---- */
