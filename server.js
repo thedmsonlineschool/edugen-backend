@@ -388,8 +388,10 @@ function parseOBCSyllabus(rawText, subject) {
 /* ---- PARSE & SAVE SYLLABUS ---- */
 app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
   try {
-    const { curriculum, subject } = req.body;
+    const { curriculum, category, gradeRange, subject } = req.body;
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    console.log('📝 Upload request:', { curriculum, category, gradeRange, subject });
 
     let parsed;
 
@@ -415,6 +417,18 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
         error: 'Parsing failed. Could not extract syllabus structure from the document.' 
       });
     }
+
+    // ✨ NEW: Add category and gradeRange from the request
+    parsed.category = category || 'secondary';
+    parsed.gradeRange = gradeRange || 'N/A';
+    
+    console.log('💾 Saving syllabus with structure:', {
+      subject: parsed.subject,
+      curriculumType: parsed.curriculumType,
+      category: parsed.category,
+      gradeRange: parsed.gradeRange,
+      topicsCount: parsed.topics?.length
+    });
 
     const saved = await Syllabus.create(parsed);
     res.json({ success: true, syllabus: saved });
