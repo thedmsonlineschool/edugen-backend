@@ -490,7 +490,7 @@ app.post('/api/generate-document', async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
+        max_tokens: 8192, // Increased from 4096 to allow complete documents with diagrams
         messages: [
           { role: 'user', content: prompt }
         ]
