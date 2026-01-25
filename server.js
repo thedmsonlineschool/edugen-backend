@@ -275,6 +275,7 @@ function parseCBCSyllabusTable(html, subject) {
 
 /* ============================================================
    OBC ZAMBIAN SYLLABUS PARSER (TEXT-BASED)
+   NOW SUPPORTS: 10.x, 11.x, 12.x AND 1.x, 2.x, 3.x formats
 ============================================================ */
 function parseOBCSyllabus(rawText, subject) {
 
@@ -283,7 +284,8 @@ function parseOBCSyllabus(rawText, subject) {
     .replace(/\n{2,}/g, '\n')
     .replace(/[•]/g, '•');
 
-  text = text.replace(/((10|11|12)\.\d+(\.\d+){0,2})/g, '\n$1');
+  // Match any number pattern: 1.1, 10.1, etc.
+  text = text.replace(/((\d+)\.\d+(\.\d+){0,2})/g, '\n$1');
 
   const lines = text
     .split('\n')
@@ -295,16 +297,18 @@ function parseOBCSyllabus(rawText, subject) {
   let currentSubtopic = null;
   let pendingNumber = null;
 
+  // Accept any number format (not just 10-12)
   const numberOnly = line =>
-    /^((10|11|12)(\.\d+){1,3})$/.test(line);
+    /^((\d+)(\.\d+){1,3})$/.test(line);
 
   const extract = line => {
-    const m = line.match(/^((10|11|12)(\.\d+){1,3})\s*(.*)$/);
+    const m = line.match(/^((\d+)(\.\d+){1,3})\s*(.*)$/);
     return m ? { number: m[1], text: m[4] || '' } : null;
   };
 
   for (const line of lines) {
 
+    // Skip header rows
     if (/^topic$|^sub\s*topic$|^specific outcomes?$|^content$/i.test(line)) {
       continue;
     }
@@ -326,6 +330,7 @@ function parseOBCSyllabus(rawText, subject) {
     const level = parsed.number.split('.').length;
     const fullText = `${parsed.number} ${parsed.text}`.trim();
 
+    // Level 2: Topic (e.g., 10.1 or 1.1)
     if (level === 2) {
       currentTopic = { name: fullText, subtopics: [] };
       topics.push(currentTopic);
@@ -333,11 +338,12 @@ function parseOBCSyllabus(rawText, subject) {
       continue;
     }
 
+    // Level 3: Subtopic (e.g., 10.1.1 or 1.1.1)
     if (level === 3 && currentTopic) {
       currentSubtopic = {
         name: fullText,
         specificOutcomes: [],
-        knowledge: [],
+        knowledge: [],  // Empty arrays are fine - AI will generate
         skills: [],
         values: []
       };
@@ -346,11 +352,14 @@ function parseOBCSyllabus(rawText, subject) {
       continue;
     }
 
+    // Level 4: Specific Outcome (e.g., 10.1.1.1 or 1.1.1.1)
     if (level === 4 && currentSubtopic) {
       currentSubtopic.specificOutcomes.push(fullText);
       continue;
     }
 
+    // Optional: Parse bullet points for knowledge/skills/values
+    // (These arrays can stay empty if not in syllabus)
     if (currentSubtopic && (line.startsWith('•') || line.startsWith('-'))) {
       const content = line.replace(/^[-•]\s*/, '').trim();
       if (content.length < 3) continue;
@@ -369,6 +378,21 @@ function parseOBCSyllabus(rawText, subject) {
         currentSubtopic.knowledge.push(content);
       }
     }
+  }
+
+  console.log(`✅ OBC Parsing complete:`);
+  console.log(`   - Topics: ${topics.length}`);
+  if (topics.length > 0) {
+    let totalSubtopics = 0;
+    let totalOutcomes = 0;
+    topics.forEach(t => {
+      totalSubtopics += t.subtopics.length;
+      t.subtopics.forEach(s => {
+        totalOutcomes += s.specificOutcomes.length;
+      });
+    });
+    console.log(`   - Subtopics: ${totalSubtopics}`);
+    console.log(`   - Specific Outcomes: ${totalOutcomes}`);
   }
 
   if (!topics.length) return null;
