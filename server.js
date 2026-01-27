@@ -412,10 +412,10 @@ function parseOBCSyllabus(rawText, subject) {
 /* ---- PARSE & SAVE SYLLABUS ---- */
 app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
   try {
-    const { curriculum, category, gradeRange, subject } = req.body;
+    const { curriculum, category, yearRange, grade, form, subject } = req.body;
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    console.log('📝 Upload request:', { curriculum, category, gradeRange, subject });
+    console.log('📝 Upload request:', { curriculum, category, yearRange, grade, form, subject });
 
     let parsed;
 
@@ -442,15 +442,36 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
       });
     }
 
-    // ✨ NEW: Add category and gradeRange from the request
-    parsed.category = category || 'secondary';
-    parsed.gradeRange = gradeRange || 'N/A';
+    // ✨ NEW: Add flexible fields based on category
+    parsed.category = category || null;
+    
+    // Add yearRange for Early Childhood
+    if (yearRange) {
+      parsed.yearRange = yearRange;
+    }
+    
+    // Add grade for Primary or OBC
+    if (grade) {
+      parsed.grade = grade;
+    }
+    
+    // Add form for Secondary
+    if (form) {
+      parsed.form = form;
+    }
+    
+    // Keep old gradeRange for backward compatibility (deprecated)
+    if (req.body.gradeRange) {
+      parsed.gradeRange = req.body.gradeRange;
+    }
     
     console.log('💾 Saving syllabus with structure:', {
       subject: parsed.subject,
       curriculumType: parsed.curriculumType,
       category: parsed.category,
-      gradeRange: parsed.gradeRange,
+      yearRange: parsed.yearRange,
+      grade: parsed.grade,
+      form: parsed.form,
       topicsCount: parsed.topics?.length
     });
 
