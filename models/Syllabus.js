@@ -33,10 +33,19 @@ const SyllabusSchema = new mongoose.Schema({
   },
   
   // ✨ NEW: Education category (Early Childhood, Primary, Secondary)
+  // Note: Only used for CBC. OBC doesn't have categories.
   category: { 
     type: String, 
     required: false,
-    enum: ['early-childhood', 'primary', 'secondary']
+    // No enum restriction - allows null for OBC syllabi
+    validate: {
+      validator: function(v) {
+        // If value exists, must be one of the valid categories
+        if (!v) return true; // null/undefined is allowed
+        return ['early-childhood', 'primary', 'secondary'].includes(v);
+      },
+      message: 'Category must be early-childhood, primary, or secondary (if provided)'
+    }
   },
   
   // ✨ NEW: Flexible fields for different education levels
