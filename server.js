@@ -446,7 +446,10 @@ app.post('/api/syllabi/parse', upload.single('file'), async (req, res) => {
     }
 
     // ✨ NEW: Add flexible fields based on category
-    parsed.category = category || null;
+    // Only set category if it has a value (for CBC). OBC doesn't need category.
+    if (category) {
+      parsed.category = category;
+    }
     
     // Add yearRange for Early Childhood
     if (yearRange) {
