@@ -35,18 +35,31 @@ const SyllabusSchema = new mongoose.Schema({
   // ✨ NEW: Education category (Early Childhood, Primary, Secondary)
   category: { 
     type: String, 
-    required: false,  // Optional for backward compatibility
+    required: false,
     enum: ['early-childhood', 'primary', 'secondary']
   },
   
-  // ✨ NEW: Grade/Form range (e.g., "Forms 1-4", "Grades 1-3", "Grades 10-12")
-  gradeRange: { 
+  // ✨ NEW: Flexible fields for different education levels
+  yearRange: { 
     type: String, 
-    required: false  // Optional for backward compatibility
+    required: false  // For Early Childhood (e.g., "3-4", "3-4 years", "Ages 3-4")
   },
   
-  // Keep old 'form' field for backward compatibility
-  form: { type: String, required: false }, // e.g., "Form 1" or "Grade 10"
+  grade: { 
+    type: String, 
+    required: false  // For Primary (e.g., "1", "2", "3", "4", "5", "6") and OBC (e.g., "10", "11", "12")
+  },
+  
+  form: { 
+    type: String, 
+    required: false  // For Secondary (e.g., "1", "2", "3", "4")
+  },
+  
+  // DEPRECATED: Keep for backward compatibility with old data
+  gradeRange: { 
+    type: String, 
+    required: false  // Old field - no longer used for new uploads
+  },
   
   topics: [TopicSchema]
 }, { 
