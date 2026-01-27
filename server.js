@@ -30,7 +30,10 @@ app.use(express.json());
 ------------------------------ */
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
-  useUnifiedTopology: true
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 10000, // 10 seconds timeout for server selection
+  socketTimeoutMS: 45000, // 45 seconds timeout for socket operations
+  maxPoolSize: 10, // Maximum connection pool size
 })
 .then(() => console.log('✅ MongoDB connected successfully'))
 .catch(err => {
@@ -541,7 +544,14 @@ app.post('/api/generate-document', async (req, res) => {
 /* ---- GET ALL SYLLABI ---- */
 app.get('/api/syllabi', async (req, res) => {
   try {
-    const syllabi = await Syllabus.find().sort({ createdAt: -1 });
+    // ⚡ OPTIMIZED: Only fetch metadata, not full topics data
+    // This dramatically speeds up loading when there are many syllabi
+    const syllabi = await Syllabus.find()
+      .select('subject curriculumType category yearRange grade form gradeRange createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .lean(); // Convert to plain JS objects for better performance
+    
+    console.log(`✅ Fetched ${syllabi.length} syllabi (metadata only)`);
     res.json(syllabi);
   } catch (err) {
     console.error('❌ Error fetching syllabi:', err);
