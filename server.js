@@ -8,8 +8,132 @@ const mammoth = require('mammoth');
 const cheerio = require('cheerio');
 
 const Syllabus = require('./models/Syllabus');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const fs = require('fs').promises;
+const path = require('path');
+
+const execAsync = promisify(exec);
 
 const app = express();
+
+/* -----------------------------
+   SVG TO PNG CONVERSION UTILITIES
+------------------------------ */
+
+/**
+ * Extract SVG diagrams from generated content
+ * Format: [SVG_DIAGRAM_START]...<svg>...</svg>...[SVG_DIAGRAM_END][DIAGRAM_CAPTION]: caption text
+ */
+function extractSvgDiagrams(content) {
+  const diagrams = [];
+  const svgRegex = /\[SVG_DIAGRAM_START\]([\s\S]*?)\[SVG_DIAGRAM_END\]\s*\[DIAGRAM_CAPTION\]:\s*(.+?)(?=\n|$)/g;
+  
+  let match;
+  while ((match = svgRegex.exec(content)) !== null) {
+    const svgCode = match[1].trim();
+    const caption = match[2].trim();
+    diagrams.push({ svgCode, caption });
+  }
+  
+  console.log(`📊 Extracted ${diagrams.length} SVG diagrams from content`);
+  return diagrams;
+}
+
+/**
+ * Convert SVG code to PNG buffer using various methods
+ * Tries multiple approaches for Railway compatibility
+ */
+async function convertSvgToPng(svgCode, index) {
+  const tempDir = '/tmp';
+  const svgPath = path.join(tempDir, `diagram_${index}_${Date.now()}.svg`);
+  const pngPath = path.join(tempDir, `diagram_${index}_${Date.now()}.png`);
+  
+  try {
+    // Write SVG to temp file
+    await fs.writeFile(svgPath, svgCode);
+    console.log(`📝 Wrote SVG to ${svgPath}`);
+    
+    // Method 1: Try using rsvg-convert (librsvg - lightweight, often available)
+    try {
+      await execAsync(`rsvg-convert -w 800 -h 600 "${svgPath}" -o "${pngPath}"`);
+      console.log(`✅ Converted SVG using rsvg-convert`);
+    } catch (err) {
+      console.log(`⚠️ rsvg-convert not available, trying imagemagick...`);
+      
+      // Method 2: Try ImageMagick
+      try {
+        await execAsync(`convert -density 150 "${svgPath}" -resize 800x600 "${pngPath}"`);
+        console.log(`✅ Converted SVG using imagemagick`);
+      } catch (err2) {
+        console.log(`⚠️ ImageMagick not available, trying inkscape...`);
+        
+        // Method 3: Try Inkscape
+        try {
+          await execAsync(`inkscape "${svgPath}" --export-png="${pngPath}" --export-width=800`);
+          console.log(`✅ Converted SVG using inkscape`);
+        } catch (err3) {
+          console.error(`❌ All conversion methods failed`);
+          // Return null to indicate conversion failed
+          return null;
+        }
+      }
+    }
+    
+    // Read the PNG file
+    const pngBuffer = await fs.readFile(pngPath);
+    
+    // Cleanup temp files
+    await fs.unlink(svgPath).catch(() => {});
+    await fs.unlink(pngPath).catch(() => {});
+    
+    return pngBuffer;
+    
+  } catch (error) {
+    console.error(`❌ Error converting SVG to PNG:`, error.message);
+    // Cleanup on error
+    await fs.unlink(svgPath).catch(() => {});
+    await fs.unlink(pngPath).catch(() => {});
+    return null;
+  }
+}
+
+/**
+ * Process content and convert SVG diagrams to Base64 PNG
+ * Returns: { processedContent, diagrams: [{base64, caption}] }
+ */
+async function processDiagramsInContent(content) {
+  const diagrams = extractSvgDiagrams(content);
+  const processedDiagrams = [];
+  
+  for (let i = 0; i < diagrams.length; i++) {
+    const { svgCode, caption } = diagrams[i];
+    console.log(`🔄 Converting diagram ${i + 1}/${diagrams.length}...`);
+    
+    const pngBuffer = await convertSvgToPng(svgCode, i);
+    
+    if (pngBuffer) {
+      const base64 = pngBuffer.toString('base64');
+      processedDiagrams.push({ base64, caption, index: i });
+      console.log(`✅ Diagram ${i + 1} converted successfully`);
+    } else {
+      console.log(`⚠️ Diagram ${i + 1} conversion failed, will include SVG code as text`);
+      processedDiagrams.push({ svgCode, caption, index: i, failed: true });
+    }
+  }
+  
+  // Remove SVG diagram blocks from content and replace with placeholders
+  let processedContent = content.replace(
+    /\[SVG_DIAGRAM_START\][\s\S]*?\[SVG_DIAGRAM_END\]\s*\[DIAGRAM_CAPTION\]:\s*.+?(?=\n|$)/g,
+    (match, offset) => {
+      // Find which diagram index this is
+      const index = processedContent.substring(0, offset).match(/\[SVG_DIAGRAM_START\]/g)?.length || 0;
+      return `[IMAGE_PLACEHOLDER_${index}]`;
+    }
+  );
+  
+  return { processedContent, diagrams: processedDiagrams };
+}
 
 /* -----------------------------
    CORS CONFIG (STACKBLITZ + LOCAL)
@@ -536,7 +660,34 @@ app.post('/api/generate-document', async (req, res) => {
     const content = data.content[0]?.text || '';
     console.log('✅ Document generated successfully, length:', content.length);
     
-    res.json({ content });
+    // Check if content contains SVG diagrams
+    const hasDiagrams = content.includes('[SVG_DIAGRAM_START]');
+    
+    if (hasDiagrams) {
+      console.log('📊 Document contains SVG diagrams, processing...');
+      try {
+        const { processedContent, diagrams } = await processDiagramsInContent(content);
+        console.log(`✅ Processed ${diagrams.length} diagrams`);
+        
+        // Return both processed content and diagrams
+        res.json({ 
+          content: processedContent, 
+          diagrams: diagrams,
+          hasDiagrams: true
+        });
+      } catch (diagramError) {
+        console.error('❌ Diagram processing failed:', diagramError);
+        // Return original content if diagram processing fails
+        res.json({ 
+          content,
+          diagrams: [],
+          hasDiagrams: false,
+          diagramError: 'Diagram conversion failed, showing original content'
+        });
+      }
+    } else {
+      res.json({ content, diagrams: [], hasDiagrams: false });
+    }
 
   } catch (err) {
     console.error('❌ Document generation error:', err);
