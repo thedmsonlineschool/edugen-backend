@@ -1,0 +1,33 @@
+# Railway Deployment - Files to Ignore
+
+# Node modules (Railway installs these)
+node_modules/
+
+# Environment files (set in Railway dashboard)
+.env
+.env.local
+.env.development
+
+# Development files
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+
+# Git
+.git/
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test/
+tests/
+*.test.js
+*.spec.js
+
+# Documentation (optional - include if you want)
+# README.md
+# docs/
